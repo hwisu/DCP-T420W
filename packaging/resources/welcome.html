@@ -1,7 +1,30 @@
 <!doctype html><html><head><meta charset="utf-8">
-<style>body{font:13px -apple-system,sans-serif;margin:0;color:#222}
-h2{font-size:15px;margin:0 0 8px}code{background:#f0f0f0;padding:1px 4px;border-radius:3px}
-li{margin-bottom:5px}</style></head><body>
+<style>
+:root { color-scheme: light dark; }
+body {
+  font: 13px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  margin: 0;
+  line-height: 1.45;
+}
+h2 { font-size: 15px; margin: 14px 0 8px; }
+h2:first-child { margin-top: 0; }
+ul { padding-left: 20px; }
+li { margin-bottom: 5px; }
+/* A translucent neutral fill reads correctly on both the light and the dark
+   installer background, and inheriting the text colour means the code can
+   never end up invisible whichever appearance macOS is using. Setting a
+   background without also pinning the colour is what broke this before. */
+code, pre {
+  background: rgba(127, 127, 127, 0.18);
+  color: inherit;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+code { padding: 1px 4px; }
+pre  { padding: 8px 10px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; }
+b { font-weight: 600; }
+</style>
+</head><body>
 <h2>Brother DCP-T420W driver</h2>
 <p>Printing and scanning for the Brother DCP-T420W, without Brother's software.</p>
 <p>This installs:</p>

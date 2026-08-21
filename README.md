@@ -60,7 +60,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.1.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.1.1.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -69,7 +69,7 @@ dependencies — no Python, no SANE, no background agents.
 To build the package yourself:
 
 ```sh
-./packaging/build-pkg.sh          # -> build/DCP-T420W-1.1.0.pkg
+./packaging/build-pkg.sh          # -> build/DCP-T420W-<version>.pkg
 ```
 
 ### From source instead

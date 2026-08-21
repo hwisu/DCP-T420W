@@ -410,7 +410,46 @@ Stage the payload somewhere on the boot volume rather than inside the working
 tree — a repo on a volume mounted `noowners` makes ownership behave oddly, and
 build artefacts do not belong in the source tree.
 
-### 3.5 Reinstalling over an existing receipt
+### 3.5 Installer HTML must not set a background without also setting a colour
+
+**Verified**, by shipping it broken. The welcome and conclusion panes are HTML
+rendered in a WebView that follows the system appearance. This looked fine
+while testing in light mode:
+
+```css
+body { color: #222 }
+pre  { background: #f6f6f6 }     /* no colour set */
+```
+
+In dark mode macOS overrides the body colour to white, but nothing overrides
+the `pre` background. White text on a near-white block: the commands were
+completely invisible, while the surrounding prose read fine.
+
+Inheriting is what fixes it, not a second hard-coded colour:
+
+```css
+:root { color-scheme: light dark; }
+code, pre {
+  background: rgba(127, 127, 127, 0.18);   /* neutral, works on either */
+  color: inherit;                          /* always the visible colour */
+}
+```
+
+A translucent grey reads on both backgrounds, and `color: inherit` means the
+code can never contrast worse than the body text around it. The rule
+generalises: **any element you give a background must also be given a colour.**
+
+You can render the panes without building a package at all — `qlmanage` uses
+WebKit, the same engine the installer does:
+
+```sh
+qlmanage -t -s 900 -o . conclusion.html      # writes conclusion.html.png
+```
+
+To check the dark case, append a stylesheet that mimics what the installer
+does, `body{background:#1e1e1e;color:#fff}`, and render that.
+
+### 3.6 Reinstalling over an existing receipt
 
 macOS remembers the package. When testing repeatedly:
 

@@ -349,7 +349,81 @@ works whether or not the print queue exists, and needs no root.
 
 ---
 
-## Part 3 — Diagnosing anything else
+## Part 3 — Packaging a driver as a .pkg
+
+### 3.1 `lsbom` shows a `._` twin for every file. Ignore it.
+
+**Verified.** Build a package on macOS 13 or later and the BOM looks alarming:
+
+```
+./usr/local/bin/._brscan            -rwxr-xr-x  root  wheel
+./usr/local/bin/brscan              -rwxr-xr-x  root  wheel
+```
+
+Those are AppleDouble encodings of `com.apple.provenance`, an extended
+attribute macOS attaches to executables. You cannot remove it — `xattr -c`
+and `ditto --noextattr` both leave it in place — and `pkgbuild` faithfully
+encodes it.
+
+They are **not** installed as files. `installer` merges them back into extended
+attributes. Confirm on any package with Apple's own extractor:
+
+```sh
+pkgutil --expand-full Something.pkg /tmp/x
+find /tmp/x -name '._*'          # empty
+```
+
+Hours are available to be lost here. Check with `--expand-full` before trying
+to fix it.
+
+### 3.2 An "Apple Development" certificate cannot sign an installer
+
+Signing a `.pkg` for distribution needs a **Developer ID Installer**
+certificate, which requires a paid Apple Developer account. The free
+"Apple Development" identity that Xcode creates is for local builds and
+`productsign` will not accept it as a substitute.
+
+An unsigned package still installs fine, but Gatekeeper blocks a double-click.
+The two ways through are right-click → **Open**, or:
+
+```sh
+sudo installer -pkg Whatever.pkg -target /
+```
+
+Say so in your release notes; users will otherwise assume the download is
+broken.
+
+### 3.3 A failing postinstall fails the whole install
+
+If the postinstall script exits non-zero, the installer reports failure even
+though the payload is already on disk. Queue creation depends on the printer
+being switched on and reachable, which is not something to gamble the install
+on. Make every step tolerant and end with `exit 0`, then tell the user how to
+add the printer by hand if discovery came up empty.
+
+### 3.4 Build universal, and stage off the repo volume
+
+`cupsd` runs the filter as a child process, so a single-architecture binary
+fails on the other kind of Mac. Build both and `lipo` them together.
+
+Stage the payload somewhere on the boot volume rather than inside the working
+tree — a repo on a volume mounted `noowners` makes ownership behave oddly, and
+build artefacts do not belong in the source tree.
+
+### 3.5 Reinstalling over an existing receipt
+
+macOS remembers the package. When testing repeatedly:
+
+```sh
+sudo pkgutil --forget com.hwisu.dcp-t420w
+```
+
+Without this the installer may take shortcuts on a reinstall, and files you
+deleted by hand will not come back.
+
+---
+
+## Part 4 — Diagnosing anything else
 
 ```sh
 # Everything the printer claims about printing

@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# Runs as root after the payload is in place. Creates the print queue.
+#
+# A failure here must not fail the whole install: the driver files are already
+# on disk and the user can add the printer from System Settings. So every step
+# is tolerant and we always exit 0.
+
+QUEUE="Brother_DCP_T420W"
+PPD="/Library/Printers/PPDs/Contents/Resources/Brother DCP-T420W.ppd"
+LOG="/var/log/install.log"
+
+log() { echo "brother-dcp-t420w: $1" | tee -a "$LOG" >/dev/null 2>&1; }
+
+if [ ! -f "$PPD" ]; then
+  log "PPD missing, skipping queue setup"
+  exit 0
+fi
+
+# Already configured with this PPD? Leave it alone.
+if /usr/bin/lpstat -p "$QUEUE" >/dev/null 2>&1; then
+  log "queue $QUEUE already exists, leaving it as is"
+  exit 0
+fi
+
+# Prefer the Bonjour URI: it survives the printer changing IP address.
+URI="$(/usr/sbin/lpinfo -v 2>/dev/null | /usr/bin/awk '/dnssd:.*DCP-T420W/ {print $2; exit}')"
+
+if [ -z "$URI" ]; then
+  log "no DCP-T420W found on the network; driver installed, queue not created"
+  exit 0
+fi
+
+log "creating queue $QUEUE for $URI"
+/usr/sbin/lpadmin -p "$QUEUE" \
+    -D "Brother DCP-T420W" \
+    -v "$URI" \
+    -P "$PPD" \
+    -o printer-is-shared=false \
+    -E >>"$LOG" 2>&1 || log "lpadmin failed"
+
+/usr/sbin/cupsenable "$QUEUE" >/dev/null 2>&1
+/usr/sbin/cupsaccept "$QUEUE" >/dev/null 2>&1
+
+# Only claim the default printer if the machine does not already have one.
+if ! /usr/bin/lpstat -d 2>/dev/null | grep -q ':'; then
+  /usr/sbin/lpadmin -d "$QUEUE" >/dev/null 2>&1
+  log "set $QUEUE as the default printer"
+fi
+
+exit 0

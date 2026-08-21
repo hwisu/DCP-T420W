@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>body{font:13px -apple-system,sans-serif;margin:0;color:#222}
+h2{font-size:15px;margin:0 0 8px}code{background:#f0f0f0;padding:1px 4px;border-radius:3px}
+pre{background:#f6f6f6;padding:8px;border-radius:4px;font-size:12px}</style></head><body>
+<h2>Installed</h2>
+<p>If your printer was on the network, the queue <b>Brother_DCP_T420W</b> is
+ready. Print a test page:</p>
+<pre>lp -d Brother_DCP_T420W /path/to/file.pdf</pre>
+<p>If no printer was found, add it in <b>System Settings &rsaquo; Printers &amp;
+Scanners</b> and pick <b>Brother DCP-T420W (PWG Raster)</b> as the model.</p>
+<h2>Scanning</h2>
+<pre>brscan                              # full page, colour, PDF
+brscan --mode lineart --out doc.pdf # crisp black &amp; white text
+brscan --crop a6 --out photo.jpg
+brscan --help</pre>
+<p><b>Note:</b> this printer's firmware ignores scan settings sent to it &mdash;
+it always scans the full glass in colour. <code>brscan</code> applies the mode,
+crop, rotation and format afterwards on your Mac.</p>
+<p>Troubleshooting and known firmware quirks:<br>
+<code>github.com/hwisu/DCP-T420W</code> &rarr; PITFALLS.md</p>
+</body></html>

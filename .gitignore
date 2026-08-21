@@ -11,3 +11,7 @@ scan-*.jpg
 scan-*.png
 *.pwg
 *.cups
+
+# Installer build output
+build/
+scanner/brscan

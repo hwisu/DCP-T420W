@@ -37,6 +37,7 @@ specified: **PWG Raster** (PWG 5102.4), over IPP.
 |---|---|---|
 | `rastertobrother` | `/usr/libexec/cups/filter/` | CUPS raster → PWG Raster |
 | `Brother DCP-T420W.ppd` | `/Library/Printers/PPDs/Contents/Resources/` | Option model |
+| `brscan` | `/usr/local/bin/` | Scanner client |
 
 The print path is
 
@@ -47,12 +48,36 @@ application/pdf → cgpdftoraster → application/vnd.cups-raster
 
 ## Install
 
+### The installer package
+
+Download `DCP-T420W-<version>.pkg` from
+[Releases](https://github.com/hwisu/DCP-T420W/releases) and open it. It installs
+the filter, the PPD and `brscan`, then finds your printer over Bonjour and
+creates a queue called `Brother_DCP_T420W`.
+
+The package is **not signed** — that needs a paid Apple Developer ID Installer
+certificate. Gatekeeper will refuse a plain double-click, so either
+**right-click the `.pkg` → Open**, or:
+
 ```sh
-sudo ./install.sh
+sudo installer -pkg DCP-T420W-1.1.0.pkg -target /
 ```
 
-It builds the filter if needed, installs both files, finds the printer over
-Bonjour and creates a queue called `Brother_DCP_T420W`. Options:
+Everything inside is a universal binary (arm64 + x86_64) with no runtime
+dependencies — no Python, no SANE, no background agents.
+
+To build the package yourself:
+
+```sh
+./packaging/build-pkg.sh          # -> build/DCP-T420W-1.1.0.pkg
+```
+
+### From source instead
+
+```sh
+sudo ./install.sh                              # printing
+sudo make -C scanner install                   # brscan -> /usr/local/bin
+```
 
 ```sh
 sudo ./install.sh --uri ipp://192.0.2.25:631/ipp/print   # skip discovery
@@ -65,6 +90,14 @@ Then:
 
 ```sh
 lp -d Brother_DCP_T420W test/testpage-a4.pdf
+```
+
+### Removing it
+
+```sh
+sudo ./uninstall.sh
+sudo rm -f /usr/local/bin/brscan
+sudo pkgutil --forget com.hwisu.dcp-t420w
 ```
 
 ## Supported options
@@ -110,14 +143,68 @@ The filter also pads the rendered band out to full bleed if it ever arrives
 inset, converts sRGB to grey when a colour raster reaches a monochrome job, and
 maps PPD media choices to IPP keywords.
 
+## Why these languages
+
+Three languages, each doing the job it is actually best at.
+
+**The print filter is C.** This is not really a free choice. A CUPS filter is a
+process `cupsd` runs with the raster on stdin, and the raster API
+(`cupsRasterReadHeader2`, `cupsRasterWritePixels`) is a C library shipped with
+the OS. Writing it in C means linking `libcups` directly and getting the tested
+PWG encoder for free. It also has to be quick: one A4 page at 600 dpi is a
+**104 MB** raster, and this filter touches every row of it.
+
+CUPS will happily execute a filter written in anything — Brother's own Linux
+drivers use shell wrappers — but per-pixel work in an interpreter is orders of
+magnitude slower, and you would have to reimplement PWG Raster encoding by hand.
+
+*Rust* is the one genuinely credible alternative: same native binary, same
+speed, and memory safety while parsing raster data derived from arbitrary PDFs,
+which is the part of this code where a bug would be ugliest. The cost is FFI
+bindings to `libcups` (or reimplementing PWG Raster, roughly 300 lines) plus a
+toolchain anyone building from source has to install. Go works too, via cgo.
+For ~370 lines against a C API, C stayed the pragmatic answer — but a Rust
+rewrite would be a defensible change, not a step backwards.
+
+**The scanner client is Swift.** eSCL is just HTTP and XML, so any language can
+speak it, and the first version here was Python. Swift wins on macOS for one
+reason: everything it needs is already in the OS. Bonjour discovery, URLSession,
+XML parsing and — the big one — ImageIO/CoreGraphics for crop, rotate,
+greyscale, thresholding and PDF output. That removes both the Python dependency
+*and* the `sips` subprocesses the Python version shells out to.
+
+The difference is measurable. Same scan, same options:
+
+| | Python + sips | Swift + CoreGraphics |
+|---|---|---|
+| wall clock | 24.7 s | 12.0 s |
+| lineart PDF | 276 KB | 77 KB |
+| dependencies | `python3`, `sips` | none |
+
+macOS does ship `/usr/bin/python3` (3.9.6, and `brscan.py` still runs on it),
+but on a machine without Command Line Tools it is a stub that prompts to install
+them — not something an installer should rely on.
+
+`scanner/brscan.py` is kept because eSCL is not macOS-specific: it is the
+portable version, useful on Linux or anywhere without a Swift toolchain.
+
+**Everything else is Python or shell, and never ships.** `scripts/genppd.py`
+generates the PPD, `test/pwgdump.py` and `test/pwg2png.py` decode PWG Raster for
+verification, `install.sh` and `packaging/build-pkg.sh` build and install. These
+are development tools that run on your machine, not runtime dependencies of the
+driver.
+
 ## Scanning
 
-`scanner/brscan` is a standalone eSCL (AirScan / Mopria Scan) client. It needs
-no installation and no root — copy it somewhere on your `PATH` if you like:
+`brscan` is a standalone eSCL (AirScan / Mopria Scan) client. The installer
+package puts it in `/usr/local/bin`; from source it is:
 
 ```sh
-sudo install -m 0755 scanner/brscan /usr/local/bin/brscan
+make -C scanner && sudo make -C scanner install
 ```
+
+It is a native universal binary with no runtime dependencies. A portable Python
+implementation of the same tool lives at `scanner/brscan.py` for non-macOS use.
 
 ```sh
 brscan                                   # full platen, colour, PDF
@@ -159,10 +246,14 @@ There is no document feeder: flatbed only, one page per scan, no duplex.
 ## Layout
 
 ```
-filter/rastertobrother.c   the print filter
+filter/rastertobrother.c   the print filter (C, links libcups)
 filter/Makefile            builds a universal (arm64 + x86_64) binary
 ppd/Brother-DCP-T420W.ppd  generated — edit the generator, not this
-scanner/brscan             eSCL scan client (no install, no dependencies)
+scanner/brscan.swift       eSCL scan client, native and dependency-free
+scanner/brscan.py          the same tool in Python, for non-macOS use
+scanner/Makefile           builds brscan universal
+packaging/build-pkg.sh     builds the double-clickable installer
+packaging/scripts/         pkg pre/postinstall (creates the print queue)
 scripts/genppd.py          builds the PPD from the printer's own attributes
 scripts/probe.sh           dumps a printer's IPP capabilities
 test/make_testpage.py      generates the A4 test page

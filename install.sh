@@ -9,6 +9,8 @@
 #   --uri URI     device URI to use instead of auto-discovery
 #   --name NAME   queue name (default Brother_DCP_T420W)
 #   --no-queue    install the driver files only
+#   --share       share the queue on the local network, so iPhones, iPads
+#                 and other Macs can print through this machine
 #
 
 set -euo pipefail
@@ -22,13 +24,15 @@ PPD_NAME="Brother DCP-T420W.ppd"
 QUEUE="Brother_DCP_T420W"
 URI=""
 MAKE_QUEUE=1
+SHARE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --uri)      URI="$2"; shift 2 ;;
     --name)     QUEUE="$2"; shift 2 ;;
     --no-queue) MAKE_QUEUE=0; shift ;;
-    -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
+    --share)    SHARE=1; shift ;;
+    -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
     *)          echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,7 +73,21 @@ if ! cupstestppd -q "$PPD_DIR/$PPD_NAME"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Queue
+# 3. AirPrint advertiser
+# ---------------------------------------------------------------------------
+# Installed either way; it only does anything once --share loads the daemon.
+if [ ! -x "$HERE/airprint/brairprint" ]; then
+  say "Building brairprint..."
+  make -C "$HERE/airprint" >/dev/null || make -C "$HERE/airprint" native >/dev/null
+fi
+
+install -d -o root -g wheel -m 0755 /usr/local/libexec
+install -o root -g wheel -m 0755 \
+        "$HERE/airprint/brairprint" /usr/local/libexec/brairprint
+say "AirPrint -> /usr/local/libexec/brairprint"
+
+# ---------------------------------------------------------------------------
+# 4. Queue
 # ---------------------------------------------------------------------------
 if [ "$MAKE_QUEUE" -eq 0 ]; then
   echo "Driver files installed. Skipping queue creation (--no-queue)."
@@ -106,6 +124,30 @@ cupsaccept "$QUEUE" 2>/dev/null || true
 if ! lpstat -d 2>/dev/null | grep -q ':'; then
   lpadmin -d "$QUEUE"
   say "Set as the default printer."
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Sharing (optional)
+# ---------------------------------------------------------------------------
+# Three switches, none of which implies the others: cupsctl opens cupsd to the
+# local subnet, lpadmin marks this one queue as shared, and brairprint publishes
+# the Bonjour record iOS looks for -- cupsd advertises neither the _universal
+# subtype nor a URF key, so without the daemon no iPhone will ever see it.
+if [ "$SHARE" -eq 1 ]; then
+  cupsctl --share-printers
+  lpadmin -p "$QUEUE" -o printer-is-shared=true
+
+  PLIST="/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
+  sed "s/Brother_DCP_T420W/$QUEUE/" \
+      "$HERE/packaging/launchd/com.hwisu.dcp-t420w.airprint.plist" > "$PLIST"
+  chown root:wheel "$PLIST"
+  chmod 0644 "$PLIST"
+
+  launchctl bootout system/com.hwisu.dcp-t420w.airprint >/dev/null 2>&1 || true
+  launchctl bootstrap system "$PLIST"
+
+  say "Shared  -> \"$QUEUE\" is on the network as an AirPrint printer."
+  say "          Anyone on this subnet can print to it without a password."
 fi
 
 echo

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hwisu.dcp-t420w.airprint</string>
+
+    <!-- The Bonjour record lives only as long as the process that registered
+         it, so this has to stay resident. It costs one sleeping process. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/brairprint</string>
+        <string>--queue</string>
+        <string>Brother_DCP_T420W</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- brairprint waits for cupsd on its own rather than exiting, so a respawn
+         means something actually went wrong; do not spin on it. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/brairprint.log</string>
+</dict>
+</plist>

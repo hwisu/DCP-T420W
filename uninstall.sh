@@ -31,7 +31,23 @@ if [ "$DROP_QUEUE" -eq 1 ] && lpstat -p "$QUEUE" >/dev/null 2>&1; then
   echo "  Removed queue $QUEUE"
 fi
 
+PLIST="/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
+if [ -f "$PLIST" ]; then
+  launchctl bootout system/com.hwisu.dcp-t420w.airprint >/dev/null 2>&1 || true
+  rm -f "$PLIST"
+  echo "  Removed the AirPrint daemon"
+fi
+rm -f /usr/local/libexec/brairprint
+
 rm -f "$FILTER_DIR/rastertobrother" && echo "  Removed $FILTER_DIR/rastertobrother"
 rm -f "$PPD_DIR/$PPD_NAME"          && echo "  Removed $PPD_DIR/$PPD_NAME"
+
+# Dropping the queue stops it being advertised, but the daemon-wide switch is
+# not ours to flip back: other printers on this Mac may be relying on it.
+if cupsctl 2>/dev/null | grep -q '^_share_printers=1'; then
+  echo
+  echo "Note: macOS printer sharing is still on for this Mac."
+  echo "      Turn it off with:  sudo cupsctl --no-share-printers"
+fi
 
 echo "Done."

@@ -38,6 +38,8 @@ specified: **PWG Raster** (PWG 5102.4), over IPP.
 | `rastertobrother` | `/usr/libexec/cups/filter/` | CUPS raster → PWG Raster |
 | `Brother DCP-T420W.ppd` | `/Library/Printers/PPDs/Contents/Resources/` | Option model |
 | `brscan` | `/usr/local/bin/` | Scanner client |
+| `brairprint` | `/usr/local/libexec/` | AirPrint Bonjour advertiser, for iOS |
+| `com.hwisu.dcp-t420w.airprint.plist` | `/Library/LaunchDaemons/` | Keeps it resident — sharing option only |
 
 The print path is
 
@@ -55,12 +57,18 @@ Download `DCP-T420W-<version>.pkg` from
 the filter, the PPD and `brscan`, then finds your printer over Bonjour and
 creates a queue called `Brother_DCP_T420W`.
 
+The installer shows one tick box, **Share the printer with iPhone, iPad and
+other Macs**, off by default. See
+[Printing from an iPhone or iPad](#printing-from-an-iphone-or-ipad) for what it
+does and when you do not want it. Installing from the command line skips the
+tick box, so there is a recipe for it in that section too.
+
 The package is **not signed** — that needs a paid Apple Developer ID Installer
 certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.1.1.pkg -target /
+sudo installer -pkg DCP-T420W-1.2.0.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -83,6 +91,7 @@ sudo make -C scanner install                   # brscan -> /usr/local/bin
 sudo ./install.sh --uri ipp://192.0.2.25:631/ipp/print   # skip discovery
 sudo ./install.sh --name Office                          # queue name
 sudo ./install.sh --no-queue                             # files only
+sudo ./install.sh --share                                # share on the LAN
 sudo ./uninstall.sh                                      # remove everything
 ```
 
@@ -98,7 +107,116 @@ lp -d Brother_DCP_T420W test/testpage-a4.pdf
 sudo ./uninstall.sh
 sudo rm -f /usr/local/bin/brscan
 sudo pkgutil --forget com.hwisu.dcp-t420w
+sudo pkgutil --forget com.hwisu.dcp-t420w.sharing
+sudo cupsctl --no-share-printers    # only if you enabled sharing
 ```
+
+## Printing from an iPhone or iPad
+
+There is nothing to install on the phone, and nothing you *can* install: iOS has
+no driver model at all. Its only print path is AirPrint, and this printer is
+Mopria — no `urf-supported`, so no AirPrint. The phone has to print *through* a
+Mac that already has this driver.
+
+Ticking the installer's sharing box, or running `install.sh --share`, sets that
+up. It takes three switches, and none of them implies the others:
+
+| Switch | Effect |
+|---|---|
+| `cupsctl --share-printers` | cupsd moves from `Listen localhost:631` to `Port 631` plus `Allow @LOCAL` |
+| `lpadmin -o printer-is-shared=true` | that one queue gets advertised |
+| `brairprint`, as a LaunchDaemon | publishes the Bonjour record iOS is actually looking for |
+
+The third one is not optional, and it is the part that is easy to miss. macOS
+advertises a shared queue as plain `_ipp._tcp` with no `URF` key in its TXT
+record; AirPrint clients browse the `_universal` subtype and ignore anything
+without URF, so an iPhone reports **"No AirPrint Printers Found"** next to a
+perfectly working shared printer. Declaring `*cupsUrfSupported` in the PPD does
+not fix it either — the queue's own PPD copy carries the attribute and the TXT
+record still comes out bare. PITFALLS.md §1.16 and §1.17 have the measurements.
+
+So `brairprint` publishes a second record for the same queue with the subtype
+and the TXT keys AirPrint wants. It proxies nothing: it registers a name, then
+sleeps. Jobs land in the ordinary queue and take the ordinary path.
+
+```
+iPhone ──▶ ipp://your-mac:631/printers/Brother_DCP_T420W
+             │
+             ├─ application/pdf ─▶ cgpdftoraster ─┐
+             │                                    ├─▶ rastertobrother ─▶ printer
+             └─ image/urf ────────────────────────┘
+```
+
+Apple Raster arrives when iOS chooses URF over PDF, and needs no new code:
+`cupsRasterOpen()` detects the `UNIRAST` sync word, so `rastertobrother` reads
+both formats through the same calls. The PPD just has to declare the edge.
+
+Installing from the command line has no tick box, so the choice has to be passed
+in:
+
+```sh
+cat > /tmp/sharing.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><array><dict>
+  <key>choiceIdentifier</key><string>com.hwisu.dcp-t420w.sharing</string>
+  <key>choiceAttribute</key><string>selected</string>
+  <key>attributeSetting</key><integer>1</integer>
+</dict></array></plist>
+EOF
+
+sudo installer -pkg DCP-T420W-1.2.0.pkg \
+     -applyChoiceChangesXML /tmp/sharing.plist -target /
+```
+
+To check what is actually on the air:
+
+```sh
+ippfind -T 6 _ipp._tcp.local. \
+  -x echo "{service_name} URF=[{txt_URF}] rp=[{txt_rp}]" \;
+```
+
+```
+Brother DCP-T420W                      URF=[] rp=[ipp/print]
+Brother DCP-T420W @ your-mac           URF=[] rp=[printers/Brother_DCP_T420W]
+Brother DCP-T420W (AirPrint)           URF=[CP1,IS1,PQ3-4-5,...,V1.4] rp=[printers/Brother_DCP_T420W]
+```
+
+The third line is the one the phone can see. If it is missing:
+`sudo launchctl print system/com.hwisu.dcp-t420w.airprint`, and
+`/var/log/brairprint.log`.
+
+### What sharing opens up
+
+Anyone on the same subnet can print **without a password** — that is how macOS
+printer sharing works, and on a home network the worst case is wasted paper. Two
+things are worth knowing:
+
+* The setting follows the machine onto every network it joins. On a laptop that
+  visits cafés or shared offices, leave it off, or stop the daemon and CUPS
+  sharing when you are out.
+* It is LAN only. Nothing reaches port 631 from outside unless your router
+  forwards it.
+
+Queue administration still needs authentication (`Require user @SYSTEM`), the
+CUPS web interface stays off, and macOS does not ship `cups-browsed` — the
+component behind the 2024 CUPS RCE chain. The Mac has to be awake.
+
+To undo it without uninstalling the driver:
+
+```sh
+sudo launchctl bootout system/com.hwisu.dcp-t420w.airprint
+sudo rm -f /Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist
+sudo cupsctl --no-share-printers
+```
+
+### Scanning from a phone
+
+Not possible through this route. eSCL scanning has no equivalent of AirPrint on
+iOS, and `brscan` is a command-line tool for the Mac. Brother's **Mobile
+Connect** app scans directly from the printer, and prints too, if you would
+rather not keep a Mac awake.
 
 ## Supported options
 
@@ -252,8 +370,12 @@ ppd/Brother-DCP-T420W.ppd  generated — edit the generator, not this
 scanner/brscan.swift       eSCL scan client, native and dependency-free
 scanner/brscan.py          the same tool in Python, for non-macOS use
 scanner/Makefile           builds brscan universal
+airprint/brairprint.c      publishes the queue as AirPrint, for iOS clients
+airprint/Makefile          builds brairprint universal
 packaging/build-pkg.sh     builds the double-clickable installer
 packaging/scripts/         pkg pre/postinstall (creates the print queue)
+packaging/scripts-sharing/ postinstall for the optional sharing component
+packaging/launchd/         the brairprint LaunchDaemon plist
 scripts/genppd.py          builds the PPD from the printer's own attributes
 scripts/probe.sh           dumps a printer's IPP capabilities
 test/make_testpage.py      generates the A4 test page

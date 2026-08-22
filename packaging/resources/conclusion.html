@@ -31,6 +31,17 @@ ready. Print a test page:</p>
 <pre>lp -d Brother_DCP_T420W /path/to/file.pdf</pre>
 <p>If no printer was found, add it in <b>System Settings &rsaquo; Printers &amp;
 Scanners</b> and pick <b>Brother DCP-T420W (PWG Raster)</b> as the model.</p>
+<h2>Printing from an iPhone or iPad</h2>
+<p>If you ticked <b>Share the printer</b>, this Mac now advertises the queue as
+an AirPrint printer and prints on the phone's behalf. On the phone, pick
+<b>Brother DCP-T420W (AirPrint)</b>.</p>
+<p><b>Remember what this opened:</b> anyone on the same network can print to it
+without a password, and this Mac has to stay awake. If you take this machine
+onto a network you do not control, turn it off. To undo it at any time:</p>
+<pre>sudo launchctl bootout system/com.hwisu.dcp-t420w.airprint
+sudo cupsctl --no-share-printers</pre>
+<p>Scanning from a phone is not covered &mdash; use Brother's Mobile Connect app
+for that.</p>
 <h2>Scanning</h2>
 <pre>brscan                              # full page, colour, PDF
 brscan --mode lineart --out doc.pdf # crisp black &amp; white text

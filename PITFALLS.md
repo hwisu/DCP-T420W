@@ -237,6 +237,80 @@ widths and truncated rows before any ink is used.
 
 ---
 
+### 1.16 Sharing a queue does not make it AirPrint
+
+**Verified.** Turning on macOS printer sharing puts the queue on the network,
+and an iPhone still reports "No AirPrint Printers Found". Two things are
+missing from what cupsd registers, and either one alone is fatal:
+
+* **The `_universal` subtype.** AirPrint clients browse
+  `_universal._sub._ipp._tcp`. cupsd registers shared queues as plain
+  `_ipp._tcp`, so iOS is not even looking at the record.
+* **The `URF` TXT key.** iOS ignores any printer without one.
+
+```sh
+ippfind -T 6 _ipp._tcp.local. -x echo "{service_name} URF=[{txt_URF}]" \;
+```
+
+```
+Brother DCP-T420W                       URF=[]     <- the printer itself (1.1)
+Brother DCP-T420W @ HwiSoo's Mac mini   URF=[]     <- the shared queue
+```
+
+Sharing is still needed — it is what makes port 631 reachable at all — but it
+is not sufficient. `brairprint` publishes a second record for the same queue
+carrying both missing pieces, which is all it does; jobs go to the ordinary
+queue and down the ordinary filter chain.
+
+### 1.17 Advertising URF is not something the PPD can do
+
+**Verified, after trying it.** The obvious fix for 1.16 is to declare the
+capability in the PPD and let cupsd advertise it:
+
+```
+*cupsUrfSupported: "CP1,IS1,PQ3-4-5,RS300-600,SRGB24,W8,DM1,FN3,V1.4"
+```
+
+It does not work. Install the PPD, re-point the queue at it with `lpadmin -P`,
+restart cupsd hard, and the attribute is demonstrably in the queue's own copy:
+
+```sh
+$ sudo grep -c cupsUrfSupported /etc/cups/ppd/Brother_DCP_T420W.ppd
+1
+$ ippfind -T 6 _ipp._tcp.local. -x echo "{service_name} URF=[{txt_URF}]" \;
+Brother DCP-T420W @ HwiSoo's Mac mini URF=[]
+```
+
+Apple's cupsd does not build that key for shared queues, whatever the PPD says.
+The attribute is kept in the generated PPD anyway because it is true and costs
+nothing, but nothing reads it — the TXT record has to come from elsewhere.
+
+There is a matching trap in the other direction. Without an `image/urf` edge,
+CUPS *still* lists `image/urf` in `document-format-supported`, because
+`apple.convs` has an `image/*` wildcard into `cgimagetopdf`. That path resolves,
+so the format looks supported; it just cannot execute, because `cgimagetopdf`
+cannot read Apple Raster. A URF job would be accepted and then die in the
+filter. The PPD therefore declares a real edge:
+
+```
+*cupsFilter2: "image/urf image/pwg-raster 40 rastertobrother"
+```
+
+No new code was needed for it: `cupsRasterOpen()` in read mode detects the
+`UNIRAST` sync word (`CUPS_RASTER_HAVE_APPLERASTER`), so `rastertobrother`
+reads Apple Raster and PWG Raster through the same calls. The cost of 40 is
+picked to sit inside a window rather than for taste:
+
+| Route | Cost |
+|---|---|
+| `image/urf` → queue, direct | **40** |
+| `image/urf` → `cgimagetopdf` → `cgpdftoraster` → queue | 25 + 100 + 20 = 145 |
+| `application/pdf` → `cgpdftoraster` → queue *(unchanged)* | 100 + 20 = **120** |
+| `application/pdf` → `cgpdftoraster` → `image/urf` → queue | 100 + 40 = 140 |
+
+Anything below 145 wins URF for our filter; anything above 20 leaves PDF on the
+route that was already tested. 40 has margin on both sides.
+
 ## Part 2 — Scanning
 
 ### 2.1 The DCP-T420W ignores every eSCL scan setting

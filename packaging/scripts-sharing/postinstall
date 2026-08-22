@@ -1,0 +1,50 @@
+#!/bin/bash
+#
+# The optional half of the install: everything needed to print from an iPhone.
+# Its payload is the LaunchDaemon plist; this script switches on the two CUPS
+# settings that go with it and starts the daemon.
+#
+# Three things are needed and none implies the others:
+#
+#   cupsctl --share-printers   opens cupsd to the local subnet (Port 631 plus
+#                              "Allow @LOCAL"; without it cupsd stays bound to
+#                              localhost and nothing is reachable)
+#   lpadmin -o printer-is-shared=true
+#                              marks this one queue as shared
+#   brairprint                 publishes the Bonjour record iOS actually looks
+#                              for -- the _universal subtype with a URF key,
+#                              neither of which cupsd emits
+#
+# As with the main postinstall, a failure here must not fail the install, so
+# every step is tolerant and we always exit 0.
+
+QUEUE="Brother_DCP_T420W"
+PLIST="/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
+LOG="/var/log/install.log"
+
+log() { echo "brother-dcp-t420w: $1" | tee -a "$LOG" >/dev/null 2>&1; }
+
+/usr/sbin/cupsctl --share-printers >>"$LOG" 2>&1 || log "cupsctl failed"
+
+if /usr/bin/lpstat -p "$QUEUE" >/dev/null 2>&1; then
+  /usr/sbin/lpadmin -p "$QUEUE" -o printer-is-shared=true >>"$LOG" 2>&1 \
+    || log "could not mark $QUEUE as shared"
+else
+  # brairprint waits for the queue rather than giving up, so starting it now is
+  # still correct: it will pick the queue up whenever it appears.
+  log "queue $QUEUE does not exist yet; brairprint will wait for it"
+fi
+
+# launchd refuses a plist that is group or world writable.
+/usr/sbin/chown root:wheel "$PLIST" 2>/dev/null
+/bin/chmod 0644 "$PLIST" 2>/dev/null
+
+# Replace any previous instance, then start. bootout on a service that is not
+# loaded returns non-zero, which is fine and expected on a first install.
+/bin/launchctl bootout system/com.hwisu.dcp-t420w.airprint >/dev/null 2>&1
+/bin/launchctl bootstrap system "$PLIST" >>"$LOG" 2>&1 \
+  || log "launchctl bootstrap failed for $PLIST"
+
+log "AirPrint sharing enabled for $QUEUE"
+
+exit 0

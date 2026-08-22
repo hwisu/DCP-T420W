@@ -3,7 +3,9 @@
     <title>Brother DCP-T420W Driver</title>
     <organization>com.hwisu</organization>
     <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
-    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+    <!-- customize="always" so the sharing tick box is on screen rather than
+         hidden behind a Customize button nobody presses. -->
+    <options customize="always" require-scripts="true" hostArchitectures="arm64,x86_64"/>
     <allowed-os-versions>
         <os-version min="11.0"/>
     </allowed-os-versions>
@@ -12,14 +14,28 @@
     <license    file="license.txt"     mime-type="text/plain"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
 
+    <!-- Order matters: the sharing component marks the queue as shared, so it
+         has to run after the component that creates the queue. -->
     <choices-outline>
-        <line choice="default">
-            <line choice="com.hwisu.dcp-t420w"/>
-        </line>
+        <line choice="com.hwisu.dcp-t420w"/>
+        <line choice="com.hwisu.dcp-t420w.sharing"/>
     </choices-outline>
-    <choice id="default"/>
-    <choice id="com.hwisu.dcp-t420w" visible="false">
+
+    <choice id="com.hwisu.dcp-t420w"
+            title="Driver and print queue"
+            description="The rastertobrother CUPS filter, the PPD and the brscan scanner client. Adds a print queue for the DCP-T420W if one is found on the network."
+            start_selected="true"
+            start_enabled="false">
         <pkg-ref id="com.hwisu.dcp-t420w"/>
     </choice>
-    <pkg-ref id="com.hwisu.dcp-t420w" version="VERSION" onConclusion="none">component.pkg</pkg-ref>
+
+    <choice id="com.hwisu.dcp-t420w.sharing"
+            title="Share the printer with iPhone and iPad — opens it to your local network"
+            description="OFF BY DEFAULT — ticking this opens your printer to everyone on your local network, with no password. Tick it on a network you trust, such as home. Do not tick it on a laptop that joins cafe, hotel or shared office Wi-Fi, because the setting follows the machine onto every network it later joins. The DCP-T420W is Mopria rather than AirPrint, so an iPhone cannot reach it any other way: this makes the Mac print on the phone's behalf, and the Mac has to stay awake. Nothing is exposed to the internet. Reversible at any time with: sudo launchctl bootout system/com.hwisu.dcp-t420w.airprint  and  sudo cupsctl --no-share-printers"
+            start_selected="false">
+        <pkg-ref id="com.hwisu.dcp-t420w.sharing"/>
+    </choice>
+
+    <pkg-ref id="com.hwisu.dcp-t420w"         version="VERSION" onConclusion="none">component.pkg</pkg-ref>
+    <pkg-ref id="com.hwisu.dcp-t420w.sharing" version="VERSION" onConclusion="none">sharing.pkg</pkg-ref>
 </installer-gui-script>

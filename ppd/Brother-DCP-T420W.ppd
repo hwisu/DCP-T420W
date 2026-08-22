@@ -25,11 +25,31 @@
 
 *%% Filter chain. cgpdftoraster can emit image/pwg-raster in one step, but it
 *%% labels the page with PPD names ("A4.Borderless", "Stationery") where PWG
-*%% Raster calls for IPP keywords. Declaring exactly one *cupsFilter2, from
-*%% application/vnd.cups-raster, is what forces our route: CUPS turns each
-*%% *cupsFilter2 into an edge into printer/<queue>, so the only way to reach
-*%% the queue is through rastertobrother, with cgpdftoraster feeding it.
+*%% Raster calls for IPP keywords. Declaring the cups-raster *cupsFilter2 is
+*%% what forces our route: CUPS turns each *cupsFilter2 into an edge into
+*%% printer/<queue>, so cgpdftoraster feeds rastertobrother rather than
+*%% reaching the queue on its own.
 *cupsFilter2: "application/vnd.cups-raster image/pwg-raster 20 rastertobrother"
+
+*%% The second edge is for iOS. AirPrint clients send Apple Raster, and
+*%% libcups reads it transparently -- cupsRasterOpen() in read mode detects
+*%% the UNIRAST sync word (CUPS_RASTER_HAVE_APPLERASTER), so rastertobrother
+*%% needs no code for it. Without this edge CUPS still advertises image/urf,
+*%% because the image/* wildcard in apple.convs routes it through
+*%% cgimagetopdf -- which cannot read Apple Raster, so the job dies there.
+*%%
+*%% Cost 40 is chosen to sit inside a window, not picked for taste:
+*%%   image/urf direct         = 40   vs via cgimagetopdf 25+100+20 = 145
+*%%   application/pdf as today = 120  vs via cgpdftoraster+urf 100+40 = 140
+*%% so URF takes this edge while PDF stays on the tested raster route.
+*cupsFilter2: "image/urf image/pwg-raster 40 rastertobrother"
+
+*%% What makes the queue AirPrint rather than Mopria when it is shared.
+*%% iOS looks for a URF key in the Bonjour TXT record and ignores anything
+*%% without one -- the printer itself has no urf-supported attribute, which
+*%% is the whole reason this driver exists, so the Mac has to supply it.
+*%% DM1 is simplex-only, which is honest: the DCP-T420W has no duplexer.
+*cupsUrfSupported: "CP1,IS1,PQ3-4-5,RS300-600,SRGB24,W8,DM1,FN3,V1.4"
 
 *OpenUI *PageSize: PickOne
 *OrderDependency: 10 AnySetup *PageSize

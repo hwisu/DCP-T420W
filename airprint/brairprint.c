@@ -87,7 +87,7 @@ on_signal(int sig)
  * worse than no record at all.
  */
 static int
-printer_uuid(const char *queue, char *buf, size_t bufsize)
+printer_uuid(const char *queue, int port, char *buf, size_t bufsize)
 {
   http_t		*http;
   ipp_t			*request, *response;
@@ -96,12 +96,12 @@ printer_uuid(const char *queue, char *buf, size_t bufsize)
   int			found = 0;
   static const char * const requested[] = { "printer-uuid" };
 
-  if ((http = httpConnect2("localhost", DEFAULT_PORT, NULL, AF_UNSPEC,
+  if ((http = httpConnect2("localhost", port, NULL, AF_UNSPEC,
                            HTTP_ENCRYPTION_IF_REQUESTED, 1, 5000, NULL)) == NULL)
     return 0;
 
   httpAssembleURIf(HTTP_URI_CODING_ALL, uri, sizeof(uri), "ipp", NULL,
-                   "localhost", DEFAULT_PORT, "/printers/%s", queue);
+                   "localhost", port, "/printers/%s", queue);
 
   request = ippNewRequest(IPP_OP_GET_PRINTER_ATTRIBUTES);
   ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_URI,
@@ -165,8 +165,29 @@ main(int argc, char *argv[])
       queue = argv[++ i];
     else if (!strcmp(argv[i], "--name") && i + 1 < argc)
       name = argv[++ i];
-    else if (!strcmp(argv[i], "--port") && i + 1 < argc)
-      port = atoi(argv[++ i]);
+    else if (!strcmp(argv[i], "--port"))
+    {
+      char	*end;
+      long	value;
+
+      if (++ i >= argc)
+      {
+        fputs("ERROR: --port requires a value.\n", stderr);
+        return 2;
+      }
+
+      errno = 0;
+      value = strtol(argv[i], &end, 10);
+
+      if (errno == ERANGE || *argv[i] == '\0' || *end != '\0' ||
+          value < 1 || value > 65535)
+      {
+        fprintf(stderr, "ERROR: invalid port %s (expected 1-65535).\n", argv[i]);
+        return 2;
+      }
+
+      port = (int)value;
+    }
     else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help"))
     {
       puts("Usage: brairprint [--queue NAME] [--name \"Service name\"] [--port N]");
@@ -187,7 +208,7 @@ main(int argc, char *argv[])
   * Wait for the queue rather than exiting and letting launchd respawn us in a
   * tight loop. At boot cupsd is usually a few seconds behind us.
   */
-  while (!printer_uuid(queue, uuid, sizeof(uuid)) && !stop_requested)
+  while (!printer_uuid(queue, port, uuid, sizeof(uuid)) && !stop_requested)
   {
     static int complained = 0;
 
@@ -245,6 +266,13 @@ main(int argc, char *argv[])
   }
 
   fd = DNSServiceRefSockFD(ref);
+
+  if (fd < 0)
+  {
+    fputs("ERROR: Bonjour socket unavailable.\n", stderr);
+    DNSServiceRefDeallocate(ref);
+    return 1;
+  }
 
   while (!stop_requested)
   {

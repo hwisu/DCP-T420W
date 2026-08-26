@@ -28,11 +28,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <limits.h>
 
 /*
  * Cancellation flag, set from SIGTERM by the scheduler.
@@ -173,13 +173,42 @@ main(int argc, char *argv[])
     unsigned	xdpi, ydpi;		/* Device resolution */
     unsigned	full_width, full_height;/* Full-bleed page in pixels */
     unsigned	left_px, top_px;	/* Offset of the imageable area */
-    unsigned	bpp;			/* Bytes per pixel */
+    unsigned	bpp;			/* Bytes per output pixel */
+    unsigned	in_bpp;			/* Bytes per input pixel */
     unsigned	in_bytes, out_bytes;	/* Line lengths */
     unsigned	y;
     pwg_media_t	*media;
 
     page ++;
     fprintf(stderr, "PAGE: %u %u\n", page, header.NumCopies ? header.NumCopies : 1);
+
+   /*
+    * This filter and the printer support only byte-interleaved sgray_8 and
+    * srgb_8. Reject packed, planar and unrelated color spaces before using
+    * their geometry to size or index a line buffer.
+    */
+    if (header.cupsWidth == 0 || header.cupsHeight == 0 ||
+        header.cupsBitsPerColor != 8 ||
+        header.cupsColorOrder != CUPS_ORDER_CHUNKED ||
+        !((header.cupsColorSpace == CUPS_CSPACE_SW &&
+           header.cupsBitsPerPixel == 8) ||
+          (header.cupsColorSpace == CUPS_CSPACE_SRGB &&
+           header.cupsBitsPerPixel == 24)))
+    {
+      fputs("ERROR: Unsupported raster pixel format.\n", stderr);
+      exit_status = 1;
+      break;
+    }
+
+    in_bpp = header.cupsBitsPerPixel / 8;
+
+    if (header.cupsWidth > UINT_MAX / in_bpp ||
+        header.cupsBytesPerLine < header.cupsWidth * in_bpp)
+    {
+      fputs("ERROR: Invalid raster line geometry.\n", stderr);
+      exit_status = 1;
+      break;
+    }
 
     xdpi = header.HWResolution[0] ? header.HWResolution[0] : 600;
     ydpi = header.HWResolution[1] ? header.HWResolution[1] : 600;
@@ -197,6 +226,16 @@ main(int argc, char *argv[])
     {
       page_w = (float)header.PageSize[0];
       page_h = (float)header.PageSize[1];
+    }
+
+   /* Avoid undefined float-to-unsigned conversions on a malformed header. */
+    if (!(page_w > 0.0f) || !(page_h > 0.0f) ||
+        (double)page_w * (double)xdpi / 72.0 > (double)UINT_MAX - 0.5 ||
+        (double)page_h * (double)ydpi / 72.0 > (double)UINT_MAX - 0.5)
+    {
+      fputs("ERROR: Invalid raster page size.\n", stderr);
+      exit_status = 1;
+      break;
     }
 
     full_width  = points_to_pixels(page_w, xdpi);
@@ -233,7 +272,6 @@ main(int argc, char *argv[])
     */
     memcpy(&pwg, &header, sizeof(pwg));
 
-    unsigned	in_bpp = header.cupsBitsPerPixel / 8;
     int		convert_gray = 0;
 
    /*
@@ -259,7 +297,16 @@ main(int argc, char *argv[])
     pwg.cupsColorOrder   = CUPS_ORDER_CHUNKED;
     pwg.cupsWidth        = full_width;
     pwg.cupsHeight       = full_height;
-    pwg.cupsBytesPerLine = (pwg.cupsBitsPerPixel / 8) * full_width;
+
+    bpp = pwg.cupsBitsPerPixel / 8;
+    if (full_width > UINT_MAX / bpp)
+    {
+      fputs("ERROR: Raster output line is too large.\n", stderr);
+      exit_status = 1;
+      break;
+    }
+
+    pwg.cupsBytesPerLine = bpp * full_width;
     pwg.cupsCompression  = 0;
 
    /*
@@ -316,7 +363,6 @@ main(int argc, char *argv[])
 
     in_bytes  = header.cupsBytesPerLine;
     out_bytes = pwg.cupsBytesPerLine;
-    bpp       = pwg.cupsBitsPerPixel / 8;
 
     free(in_line);
     free(out_line);
@@ -344,10 +390,11 @@ main(int argc, char *argv[])
       }
       else
       {
-        if (cupsRasterReadPixels(in, in_line, in_bytes) == 0)
+        if (cupsRasterReadPixels(in, in_line, in_bytes) != in_bytes)
         {
-         /* Short page: pad the remainder rather than truncating the sheet. */
-          memset(out_line, 0xFF, out_bytes);
+          fputs("ERROR: Truncated raster page.\n", stderr);
+          exit_status = 1;
+          break;
         }
         else
         {

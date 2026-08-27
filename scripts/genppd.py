@@ -261,15 +261,15 @@ def main(out=sys.stdout):
     w("*OrderDependency: 10 AnySetup *cupsPrintQuality\n")
     w('*ko.Translation cupsPrintQuality/인쇄 품질: ""\n')
     w("*DefaultcupsPrintQuality: Normal\n")
-    w('*cupsPrintQuality Draft/Draft (300dpi, saves ink): '
+    w('*cupsPrintQuality Draft/Eco (300dpi, saves ink): '
       '"<</HWResolution[300 300]>>setpagedevice"\n')
-    w('*ko.cupsPrintQuality Draft/초안 (300dpi, 잉크 절약): ""\n')
+    w('*ko.cupsPrintQuality Draft/에코 (300dpi, 잉크 절약): ""\n')
     w('*cupsPrintQuality Normal/Normal (600dpi): '
       '"<</HWResolution[600 600]>>setpagedevice"\n')
     w('*ko.cupsPrintQuality Normal/표준 (600dpi): ""\n')
-    w('*cupsPrintQuality High/Best (600dpi): '
+    w('*cupsPrintQuality High/High Quality (600dpi): '
       '"<</HWResolution[600 600]>>setpagedevice"\n')
-    w('*ko.cupsPrintQuality High/고품질 (600dpi): ""\n')
+    w('*ko.cupsPrintQuality High/고화질 (600dpi): ""\n')
     w("*CloseUI: *cupsPrintQuality\n\n")
 
     # -- Constraints -------------------------------------------------------

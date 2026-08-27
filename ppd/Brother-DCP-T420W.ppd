@@ -269,12 +269,12 @@
 *OrderDependency: 10 AnySetup *cupsPrintQuality
 *ko.Translation cupsPrintQuality/인쇄 품질: ""
 *DefaultcupsPrintQuality: Normal
-*cupsPrintQuality Draft/Draft (300dpi, saves ink): "<</HWResolution[300 300]>>setpagedevice"
-*ko.cupsPrintQuality Draft/초안 (300dpi, 잉크 절약): ""
+*cupsPrintQuality Draft/Eco (300dpi, saves ink): "<</HWResolution[300 300]>>setpagedevice"
+*ko.cupsPrintQuality Draft/에코 (300dpi, 잉크 절약): ""
 *cupsPrintQuality Normal/Normal (600dpi): "<</HWResolution[600 600]>>setpagedevice"
 *ko.cupsPrintQuality Normal/표준 (600dpi): ""
-*cupsPrintQuality High/Best (600dpi): "<</HWResolution[600 600]>>setpagedevice"
-*ko.cupsPrintQuality High/고품질 (600dpi): ""
+*cupsPrintQuality High/High Quality (600dpi): "<</HWResolution[600 600]>>setpagedevice"
+*ko.cupsPrintQuality High/고화질 (600dpi): ""
 *CloseUI: *cupsPrintQuality
 
 *%% Borderless output requires photo media.

@@ -17,9 +17,17 @@ if [ ! -f "$PPD" ]; then
   exit 0
 fi
 
-# Already configured with this PPD? Leave it alone.
+# A package upgrade replaces the model PPD in /Library, but CUPS keeps a
+# private copy for every queue under /etc/cups/ppd. Refresh that copy as well;
+# otherwise new or renamed Printer Features never appear for an existing
+# installation. Supplying only -P preserves the device URI, sharing state and
+# the rest of the queue configuration.
 if /usr/bin/lpstat -p "$QUEUE" >/dev/null 2>&1; then
-  log "queue $QUEUE already exists, leaving it as is"
+  if /usr/sbin/lpadmin -p "$QUEUE" -P "$PPD" >>"$LOG" 2>&1; then
+    log "updated PPD for existing queue $QUEUE"
+  else
+    log "could not update PPD for existing queue $QUEUE"
+  fi
   exit 0
 fi
 

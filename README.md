@@ -68,7 +68,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.2.1.pkg -target /
+sudo installer -pkg DCP-T420W-1.3.0.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -166,7 +166,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.2.1.pkg \
+sudo installer -pkg DCP-T420W-1.3.0.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -227,12 +227,29 @@ rather not keep a Mac awake.
   variants with zero margins. Constrained against plain paper, since full bleed
   is a photo-path feature.
 * **Media type** — Plain, Inkjet, Glossy Photo, Brother BP71.
-* **Quality** — Draft (300 dpi, saves ink), Normal and Best (600 dpi).
+* **Quality** — Eco (300 dpi, saves ink), Normal and High Quality (600 dpi).
 * **Colour** — Colour (`srgb_8`) or Grayscale (`sgray_8`).
 * **Ink levels** — reported through IPP (`*cupsIPPSupplies`).
 
 Margins come from the printer: 3 mm on cut sheet, 12 mm top and bottom on
 envelopes, 0 for borderless.
+
+### Finding the options in Preview
+
+macOS keeps these controls in collapsed sections of the print panel. In
+Preview, open **File → Print**, then use:
+
+* **Paper Handling → Sheets to Print** — All Sheets, Odd Only or Even Only.
+  This is a standard macOS page-selection control, not a printer feature. It is
+  disabled for a one-page PDF because there is no useful subset to select.
+* **Printer Options → Printer Features** — Media Type, Color Mode and Print
+  Quality (Eco, Normal or High Quality). These entries come from this driver's
+  PPD and are available to any macOS application that shows printer features.
+
+Do not add a second odd/even option to the PPD: Preview already passes its
+selection to CUPS as `page-set=odd` or `page-set=even`, and `cgpdftoraster`
+applies it before the raster reaches this driver. A duplicate driver-side
+filter would select the pages twice and can produce the wrong result.
 
 ## Why a custom filter, when `cgpdftoraster` can emit PWG Raster directly
 

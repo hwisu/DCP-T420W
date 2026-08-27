@@ -71,8 +71,12 @@ def headers(path):
         # Skip the page's band data: each line is a repeat count plus packbits.
         lines = 0
         while lines < h["cupsHeight"] and off < len(data):
-            off += 1                      # line repeat count
-            lines += 1
+            # The first byte says how many *additional* rows reuse this
+            # encoded line. Ignoring it walks into the next page header and
+            # makes every multi-page PWG stream look like a one-page file.
+            repeat = data[off]
+            off += 1
+            lines += repeat + 1
             written = 0
             while written < h["cupsBytesPerLine"] and off < len(data):
                 ctrl = data[off]; off += 1

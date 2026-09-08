@@ -68,7 +68,8 @@ def write_png(path, rows, width, height, bpp, scale=1):
     png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0))
     png += chunk(b"IDAT", zlib.compress(raw, 6))
     png += chunk(b"IEND", b"")
-    open(path, "wb").write(png)
+    with open(path, "wb") as output:
+        output.write(png)
     return width, height
 
 

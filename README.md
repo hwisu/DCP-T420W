@@ -68,7 +68,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.3.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.3.1.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -166,7 +166,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.3.0.pkg \
+sudo installer -pkg DCP-T420W-1.3.1.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -362,8 +362,8 @@ you get JPEG.
 
 So `brscan` sends a correct, well-formed request anyway — harmless, and
 sibling models may honour it — and then applies whatever the device ignored
-locally using `sips`, which ships with macOS. `--raw` skips all of that and
-saves the scanner's bytes untouched.
+locally using CoreGraphics and ImageIO (`sips` in the Python client). `--raw`
+skips all of that and saves the scanner's bytes untouched.
 
 | Option | Where it happens |
 |---|---|
@@ -377,6 +377,11 @@ square — roughly 198 dpi across and 188 dpi down — so `--crop` scales each
 axis separately. See [PITFALLS.md §2.3](PITFALLS.md).
 
 There is no document feeder: flatbed only, one page per scan, no duplex.
+
+Invalid options are rejected before discovery or scanning. Crop dimensions
+must be positive and finite, rotation must be 0/90/180/270, and the lineart
+threshold must be 1–254. A failed page transfer reports an error and releases
+the scanner job; it does not report a partially downloaded scan as successful.
 
 ## Layout
 
@@ -403,6 +408,22 @@ PITFALLS.md                everything that bites, printing and scanning
 ```
 
 ## Verification
+
+Run the offline regression suite after building the binaries:
+
+```sh
+make -C filter
+make -C scanner
+python3 -m unittest discover -s test -v
+```
+
+It checks raster padding, colour conversion and malformed geometry, plus
+scanner option validation, job URLs, error cleanup and image processing using
+a loopback eSCL server. It never discovers or operates a physical printer.
+The macOS PDF pipeline tests also verify quality, borderless paper, and odd/even
+page selection through `cgpdftoraster`.
+`BROTHER_FILTER` and `BROTHER_SCANNER` can point to sanitizer builds or binaries
+extracted from an installer package.
 
 The driver was checked without printing, by decoding its own output:
 

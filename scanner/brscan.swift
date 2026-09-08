@@ -121,15 +121,17 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
     var out: (Int, [AnyHashable: Any], Data)?
     var failure: Error?
 
-    URLSession.shared.dataTask(with: req) { data, response, error in
+    let task = URLSession.shared.dataTask(with: req) { data, response, error in
         if let error { failure = error }
         else if let r = response as? HTTPURLResponse {
             out = (r.statusCode, r.allHeaderFields, data ?? Data())
         }
         sem.signal()
-    }.resume()
+    }
+    task.resume()
 
     if sem.wait(timeout: .now() + timeout + 5) == .timedOut {
+        task.cancel()
         throw ScanError("\(method) \(url.path) timed out")
     }
     if let failure {
@@ -176,6 +178,9 @@ func parseCaps(_ data: Data) throws -> PlatenCaps {
         .first?.stringValue, let n = Int(w) { c.maxWidth = n }
     if let h = (try? doc.nodes(forXPath: "\(platen)//*[local-name()='MaxHeight']"))?
         .first?.stringValue, let n = Int(h) { c.maxHeight = n }
+    guard c.maxWidth > 0, c.maxHeight > 0 else {
+        throw ScanError("ScannerCapabilities has invalid platen dimensions.")
+    }
     c.colorModes = all("\(platen)//*[local-name()='ColorMode']")
     c.formats = Array(Set(all("\(platen)//*[local-name()='DocumentFormat']"))).sorted()
     c.resolutions = all("\(platen)//*[local-name()='XResolution']")
@@ -238,34 +243,30 @@ func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
     }
 
     // Some firmwares put an unreachable host in Location; keep ours.
-    var path = location
-    if let r = path.range(of: "://"),
-       let slash = path[r.upperBound...].firstIndex(of: "/") {
-        path = String(path[slash...])
+    guard let resolved = URL(string: location, relativeTo: base.appendingPathComponent("ScanJobs")),
+          let target = URLComponents(url: resolved, resolvingAgainstBaseURL: true),
+          var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw ScanError("Bad job URL: \(location)")
     }
-    while path.hasSuffix("/") { path.removeLast() }
-    guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
-        throw ScanError("Bad base URL.")
-    }
-    comps.path = path
+    comps.percentEncodedPath = target.percentEncodedPath
+    while comps.percentEncodedPath.hasSuffix("/") { comps.percentEncodedPath.removeLast() }
+    comps.percentEncodedQuery = target.percentEncodedQuery
     guard let job = comps.url else { throw ScanError("Bad job URL: \(location)") }
     if verbose { FileHandle.standardError.write("  job \(job)\n".data(using: .utf8)!) }
+    defer { _ = try? http("DELETE", job, timeout: 15) } // also release failed jobs
 
     var pages: [Data] = []
     while true {
         let next = job.appendingPathComponent("NextDocument")
-        guard let (st, _, data) = try? http("GET", next) else { break }
+        let (st, _, data) = try http("GET", next)
         // 404/410 is the documented end-of-pages signal.
         if st == 404 || st == 410 { break }
-        if st != 200 {
-            if pages.isEmpty { throw ScanError("NextDocument returned HTTP \(st).") }
-            break
+        guard st == 200 else {
+            throw ScanError("NextDocument returned HTTP \(st).")
         }
-        if data.isEmpty { break }
+        guard !data.isEmpty else { throw ScanError("NextDocument returned an empty page.") }
         pages.append(data)
     }
-
-    _ = try? http("DELETE", job, timeout: 15)   // best effort
 
     if pages.isEmpty { throw ScanError("Scanner returned no pages.") }
     return pages
@@ -284,8 +285,8 @@ func loadImage(_ data: Data) throws -> CGImage {
 func cropped(_ img: CGImage, widthMM: Double, heightMM: Double,
              platenWmm: Double, platenHmm: Double) -> CGImage {
     // Pixels are not square on this scanner, so scale each axis separately.
-    let w = min(img.width, max(1, Int((widthMM / platenWmm * Double(img.width)).rounded())))
-    let h = min(img.height, max(1, Int((heightMM / platenHmm * Double(img.height)).rounded())))
+    let w = max(1, Int((min(1, widthMM / platenWmm) * Double(img.width)).rounded()))
+    let h = max(1, Int((min(1, heightMM / platenHmm) * Double(img.height)).rounded()))
     // Origin is the top-left of the glass.
     return img.cropping(to: CGRect(x: 0, y: 0, width: w, height: h)) ?? img
 }
@@ -364,6 +365,16 @@ func write(_ img: CGImage, to url: URL, format: OutputFormat) throws {
 
 func err(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 
+func parseCrop(_ spec: String) throws -> (Double, Double) {
+    if let preset = cropPresets[spec.lowercased()] { return preset }
+    let parts = spec.lowercased().split(separator: "x", omittingEmptySubsequences: false)
+    guard parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]),
+          w.isFinite, h.isFinite, w > 0, h > 0 else {
+        throw ScanError("Cannot parse --crop \(spec); use a preset or positive, finite WxH in mm.")
+    }
+    return (w, h)
+}
+
 let usage = """
 brscan - scan from a Brother DCP-T420W over eSCL
 
@@ -397,45 +408,67 @@ The DCP-T420W firmware ignores eSCL scan settings, so --mode, --crop,
 
 func main() -> Int32 {
     var args = Array(CommandLine.arguments.dropFirst())
-    var host: String?, outPath: String?, cropSpec: String?
+    var host: String?, outPath: String?, cropSize: (Double, Double)?
     var port = 80, path = "eSCL", dpi = 300, rotate = 0, threshold = 128
     var mode = ColorMode.color, format: OutputFormat?, intent = "Document"
     var raw = false, wantCaps = false, wantList = false, wantStatus = false
     var verbose = false
 
-    func value(_ flag: String) -> String? {
-        guard !args.isEmpty else { return nil }
+    func value(_ flag: String) throws -> String {
+        guard let next = args.first, !next.isEmpty, !next.hasPrefix("--") else {
+            throw ScanError("\(flag) requires a value.")
+        }
         return args.removeFirst()
     }
 
-    while !args.isEmpty {
-        let a = args.removeFirst()
-        switch a {
-        case "--host": host = value(a)
-        case "--port": port = Int(value(a) ?? "80") ?? 80
-        case "--path": path = value(a) ?? "eSCL"
-        case "--out": outPath = value(a)
-        case "--format":
-            guard let v = value(a), let f = OutputFormat(rawValue: v == "jpg" ? "jpeg" : v)
-            else { err("brscan: bad --format"); return 2 }
-            format = f
-        case "--mode":
-            guard let v = value(a), let m = ColorMode(rawValue: v)
-            else { err("brscan: bad --mode"); return 2 }
-            mode = m
-        case "--threshold": threshold = Int(value(a) ?? "128") ?? 128
-        case "--crop": cropSpec = value(a)
-        case "--rotate": rotate = Int(value(a) ?? "0") ?? 0
-        case "--dpi": dpi = Int(value(a) ?? "300") ?? 300
-        case "--intent": intent = value(a) ?? "Document"
-        case "--raw": raw = true
-        case "--caps": wantCaps = true
-        case "--list": wantList = true
-        case "--status": wantStatus = true
-        case "-v", "--verbose": verbose = true
-        case "-h", "--help": print(usage); return 0
-        default: err("brscan: unknown option \(a)"); return 2
+    func integer(_ flag: String, in range: ClosedRange<Int>) throws -> Int {
+        let text = try value(flag)
+        guard let n = Int(text), range.contains(n) else {
+            throw ScanError("Invalid \(flag): \(text) (expected \(range.lowerBound)-\(range.upperBound)).")
         }
+        return n
+    }
+
+    do {
+        while !args.isEmpty {
+            let a = args.removeFirst()
+            switch a {
+            case "--host": host = try value(a)
+            case "--port": port = try integer(a, in: 1...65535)
+            case "--path": path = try value(a)
+            case "--out": outPath = try value(a)
+            case "--format":
+                let v = try value(a)
+                guard let f = OutputFormat(rawValue: v == "jpg" ? "jpeg" : v)
+                else { err("brscan: bad --format"); return 2 }
+                format = f
+            case "--mode":
+                guard let m = ColorMode(rawValue: try value(a))
+                else { err("brscan: bad --mode"); return 2 }
+                mode = m
+            case "--threshold": threshold = try integer(a, in: 1...254)
+            case "--crop": cropSize = try parseCrop(value(a))
+            case "--rotate":
+                rotate = try integer(a, in: 0...270)
+                guard rotate % 90 == 0 else { throw ScanError("--rotate must be 0, 90, 180 or 270.") }
+            case "--dpi": dpi = try integer(a, in: 1...Int(Int32.max))
+            case "--intent":
+                intent = try value(a)
+                guard ["Document", "TextAndGraphic", "Photo", "Preview"].contains(intent) else {
+                    throw ScanError("--intent must be Document, TextAndGraphic, Photo or Preview.")
+                }
+            case "--raw": raw = true
+            case "--caps": wantCaps = true
+            case "--list": wantList = true
+            case "--status": wantStatus = true
+            case "-v", "--verbose": verbose = true
+            case "-h", "--help": print(usage); return 0
+            default: err("brscan: unknown option \(a)"); return 2
+            }
+        }
+    } catch {
+        err("brscan: \(error)")
+        return 2
     }
 
     do {
@@ -539,19 +572,7 @@ func main() -> Int32 {
                 try data.write(to: url)      // already a PDF, pass it through
             } else {
                 var img = try loadImage(data)
-                if let spec = cropSpec {
-                    let size: (Double, Double)
-                    if let preset = cropPresets[spec.lowercased()] {
-                        size = preset
-                    } else {
-                        let parts = spec.lowercased().split(separator: "x")
-                        guard parts.count == 2, let w = Double(parts[0]),
-                              let hh = Double(parts[1]) else {
-                            throw ScanError("Cannot parse --crop \(spec); "
-                                            + "use a preset or WxH in mm.")
-                        }
-                        size = (w, hh)
-                    }
+                if let size = cropSize {
                     img = cropped(img, widthMM: size.0, heightMM: size.1,
                                   platenWmm: platenW, platenHmm: platenH)
                     if verbose { err("  cropped to \(img.width)x\(img.height)px") }

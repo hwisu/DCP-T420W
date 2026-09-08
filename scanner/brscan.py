@@ -30,6 +30,8 @@ Requires only Python 3 and sips, both part of macOS.
 
 import argparse
 import datetime
+from http.client import HTTPException
+import math
 import os
 import re
 import shutil
@@ -39,6 +41,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
@@ -59,7 +62,9 @@ CROPS = {"a4": (210.0, 297.0), "letter": (215.9, 279.4), "a5": (148.0, 210.0),
 
 
 class ScanError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +119,8 @@ def http(method, url, data=None, content_type=None, timeout=120):
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
-        raise ScanError(f"{method} {url} -> HTTP {exc.code} {exc.reason}") from exc
+        exc.close()
+        raise ScanError(f"{method} {url} -> HTTP {exc.code} {exc.reason}", exc.code) from exc
     except urllib.error.URLError as exc:
         raise ScanError(f"Cannot reach {url}: {exc.reason}") from exc
 
@@ -214,27 +220,39 @@ def run_scan(base, settings, verbose=False):
     if not job:
         raise ScanError("Scanner accepted the job but returned no Location header.")
     # Some firmwares put an unreachable host in Location; keep the one we used.
-    job = re.sub(r"^https?://[^/]+", base.rsplit("/", 1)[0], job.rstrip("/"))
+    origin = urllib.parse.urlsplit(base)
+    target = urllib.parse.urlsplit(urllib.parse.urljoin(f"{base}/ScanJobs", job))
+    job = urllib.parse.urlunsplit((origin.scheme, origin.netloc,
+                                  target.path.rstrip("/"), target.query, ""))
+    resp.close()
     if verbose:
         print(f"  job {job}", file=sys.stderr)
 
     pages = []
-    while True:
-        try:
-            doc = http("GET", f"{job}/NextDocument", timeout=300)
-        except ScanError as exc:
-            if pages or re.search(r"HTTP (404|410)", str(exc)):
-                break
-            raise
-        data = doc.read()
-        if not data:
-            break
-        pages.append((data, doc.headers.get("Content-Type", "")))
-
     try:
-        http("DELETE", job, timeout=15)
-    except ScanError:
-        pass
+        while True:
+            try:
+                next_url = urllib.parse.urlsplit(job)
+                next_url = next_url._replace(path=next_url.path + "/NextDocument").geturl()
+                with http("GET", next_url, timeout=300) as doc:
+                    if doc.status != 200:
+                        raise ScanError(f"NextDocument returned HTTP {doc.status}.")
+                    data = doc.read()
+                    content_type = doc.headers.get("Content-Type", "")
+            except ScanError as exc:
+                if exc.status in (404, 410):
+                    break
+                raise
+            if not data:
+                raise ScanError("NextDocument returned an empty page.")
+            pages.append((data, content_type))
+    except (OSError, HTTPException) as exc:
+        raise ScanError(f"Could not read NextDocument: {exc}") from exc
+    finally:
+        try:
+            http("DELETE", job, timeout=15).close()
+        except (ScanError, OSError, HTTPException):
+            pass
 
     if not pages:
         raise ScanError("Scanner returned no pages.")
@@ -350,7 +368,10 @@ def parse_crop(spec):
     m = re.fullmatch(r"(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)", spec.lower())
     if not m:
         raise ScanError(f"Cannot parse --crop {spec!r}; use a preset or WxH in mm.")
-    return float(m.group(1)), float(m.group(2))
+    w, h = float(m.group(1)), float(m.group(2))
+    if not (math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0):
+        raise ScanError("--crop dimensions must be positive and finite.")
+    return w, h
 
 
 def main():
@@ -370,6 +391,7 @@ def main():
                    help="black/white cutoff 1-254 for --mode lineart (default 128)")
     p.add_argument("--dpi", type=int, default=300, help="requested of the device")
     p.add_argument("--intent", default="Document",
+                   choices=["Document", "TextAndGraphic", "Photo", "Preview"],
                    help="Document, TextAndGraphic, Photo or Preview")
     p.add_argument("--crop", help="a4, letter, a5, a6, 4x6, 5x7 or WxH in mm, "
                                   "taken from the top-left of the glass")
@@ -382,6 +404,16 @@ def main():
     p.add_argument("--status", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
+    if not 1 <= args.port <= 65535:
+        p.error("--port must be 1-65535")
+    if not 1 <= args.dpi <= 2147483647:
+        p.error("--dpi must be 1-2147483647")
+    if not 1 <= args.threshold <= 254:
+        p.error("--threshold must be 1-254")
+    try:
+        crop = parse_crop(args.crop) if args.crop else None
+    except ScanError as exc:
+        p.error(str(exc))
 
     try:
         if args.list:
@@ -416,6 +448,8 @@ def main():
         plat = platen_caps(caps)
         max_w = int(text_of(plat, "scan:MaxWidth", "2550"))
         max_h = int(text_of(plat, "scan:MaxHeight", "3507"))
+        if max_w <= 0 or max_h <= 0:
+            raise ScanError("ScannerCapabilities has invalid platen dimensions.")
         version = text_of(caps, "pwg:Version", "2.63")
 
         fmt = args.format
@@ -468,16 +502,16 @@ def main():
                 work = os.path.join(tmp, "work.png")
                 sips("-s", "format", "png", src, "--out", work)
 
-                if args.crop:
-                    cw_mm, ch_mm = parse_crop(args.crop)
+                if crop:
+                    cw_mm, ch_mm = crop
                     fw, fh_px = image_size(work)
                     # Map millimetres onto the frame using the platen size the
                     # scanner reports. Pixels are not square on this device, so
                     # each axis gets its own scale.
                     plat_w_mm = max_w / UNITS_PER_INCH * MM_PER_INCH
                     plat_h_mm = max_h / UNITS_PER_INCH * MM_PER_INCH
-                    cw = max(1, min(fw, round(cw_mm / plat_w_mm * fw)))
-                    ch = max(1, min(fh_px, round(ch_mm / plat_h_mm * fh_px)))
+                    cw = max(1, round(min(1, cw_mm / plat_w_mm) * fw))
+                    ch = max(1, round(min(1, ch_mm / plat_h_mm) * fh_px))
                     # sips crops centred, so offset back to the top-left origin.
                     sips("-c", ch, cw, "--cropOffset", 0, 0, work, "--out", work)
                     if args.verbose:

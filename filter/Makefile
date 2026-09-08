@@ -6,6 +6,7 @@
 SDK      := $(shell xcrun --show-sdk-path)
 CC       ?= cc
 ARCHS    ?= -arch arm64 -arch x86_64
+MIN_OS   ?= 11.0
 CFLAGS   ?= -Os -Wall -Wextra -Wno-deprecated-declarations -isysroot $(SDK)
 LDFLAGS  ?= -isysroot $(SDK) -lcups
 
@@ -13,12 +14,12 @@ TARGET   := rastertobrother
 
 all: $(TARGET)
 
-$(TARGET): rastertobrother.c
-	$(CC) $(ARCHS) $(CFLAGS) -o $@ $< $(LDFLAGS)
+$(TARGET): rastertobrother.c Makefile
+	$(CC) $(ARCHS) $(CFLAGS) -mmacosx-version-min=$(MIN_OS) -o $@ $< $(LDFLAGS)
 
 # Single-architecture build, useful when cross-arch SDK stubs are unavailable.
 native: rastertobrother.c
-	$(CC) $(CFLAGS) -o $(TARGET) $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -mmacosx-version-min=$(MIN_OS) -o $(TARGET) $< $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)

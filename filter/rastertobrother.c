@@ -33,6 +33,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 
 /*
  * Cancellation flag, set from SIGTERM by the scheduler.
@@ -71,15 +72,19 @@ media_type_keyword(const char *choice)
 /*
  * Round a length in PostScript points to whole device pixels.
  */
-static unsigned
-points_to_pixels(float points, unsigned dpi)
+static int
+points_to_pixels(double points, unsigned dpi, unsigned *pixels)
 {
-  double px = (double)points * (double)dpi / 72.0;
+  double px = points * (double)dpi / 72.0;
+
+  if (!isfinite(px) || px > (double)UINT_MAX - 0.5)
+    return (0);
 
   if (px < 0.0)
     px = 0.0;
 
-  return ((unsigned)(px + 0.5));
+  *pixels = (unsigned)(px + 0.5);
+  return (1);
 }
 
 int
@@ -228,23 +233,41 @@ main(int argc, char *argv[])
       page_h = (float)header.PageSize[1];
     }
 
-   /* Avoid undefined float-to-unsigned conversions on a malformed header. */
+   /* Validate both the pixel geometry and the signed IPP media dimensions. */
+    double media_w = (double)page_w * 2540.0 / 72.0;
+    double media_h = (double)page_h * 2540.0 / 72.0;
+
     if (!(page_w > 0.0f) || !(page_h > 0.0f) ||
-        (double)page_w * (double)xdpi / 72.0 > (double)UINT_MAX - 0.5 ||
-        (double)page_h * (double)ydpi / 72.0 > (double)UINT_MAX - 0.5)
+        media_w > (double)INT_MAX - 0.5 ||
+        media_h > (double)INT_MAX - 0.5 ||
+        !points_to_pixels(page_w, xdpi, &full_width) ||
+        !points_to_pixels(page_h, ydpi, &full_height))
     {
       fputs("ERROR: Invalid raster page size.\n", stderr);
       exit_status = 1;
       break;
     }
 
-    full_width  = points_to_pixels(page_w, xdpi);
-    full_height = points_to_pixels(page_h, ydpi);
+    if (!isfinite(header.cupsImagingBBox[0]) ||
+        !isfinite(header.cupsImagingBBox[1]) ||
+        !isfinite(header.cupsImagingBBox[2]) ||
+        !isfinite(header.cupsImagingBBox[3]))
+    {
+      fputs("ERROR: Invalid raster imaging bounds.\n", stderr);
+      exit_status = 1;
+      break;
+    }
 
     if (header.cupsImagingBBox[2] > header.cupsImagingBBox[0])
     {
-      left_px = points_to_pixels(header.cupsImagingBBox[0], xdpi);
-      top_px  = points_to_pixels(page_h - header.cupsImagingBBox[3], ydpi);
+      if (!points_to_pixels(header.cupsImagingBBox[0], xdpi, &left_px) ||
+          !points_to_pixels((double)page_h - header.cupsImagingBBox[3],
+                            ydpi, &top_px))
+      {
+        fputs("ERROR: Invalid raster imaging offset.\n", stderr);
+        exit_status = 1;
+        break;
+      }
     }
     else
     {
@@ -260,9 +283,9 @@ main(int argc, char *argv[])
     if (full_height < header.cupsHeight)
       full_height = header.cupsHeight;
 
-    if (left_px + header.cupsWidth > full_width)
+    if (left_px > full_width - header.cupsWidth)
       left_px = full_width - header.cupsWidth;
-    if (top_px + header.cupsHeight > full_height)
+    if (top_px > full_height - header.cupsHeight)
       top_px = full_height - header.cupsHeight;
 
    /*
@@ -297,6 +320,8 @@ main(int argc, char *argv[])
     pwg.cupsColorOrder   = CUPS_ORDER_CHUNKED;
     pwg.cupsWidth        = full_width;
     pwg.cupsHeight       = full_height;
+    pwg.HWResolution[0]  = xdpi;
+    pwg.HWResolution[1]  = ydpi;
 
     bpp = pwg.cupsBitsPerPixel / 8;
     if (full_width > UINT_MAX / bpp)
@@ -313,8 +338,8 @@ main(int argc, char *argv[])
     * PWG Raster carries the media identity as a self-describing name, and
     * leaves the margin fields at zero because the image is already full bleed.
     */
-    if ((media = pwgMediaForSize((int)(page_w * 2540.0f / 72.0f + 0.5f),
-                                 (int)(page_h * 2540.0f / 72.0f + 0.5f))) != NULL)
+    if ((media = pwgMediaForSize((int)(media_w + 0.5),
+                                 (int)(media_h + 0.5))) != NULL)
       strlcpy(pwg.cupsPageSizeName, media->pwg, sizeof(pwg.cupsPageSizeName));
 
     strlcpy(pwg.MediaType, type_keyword, sizeof(pwg.MediaType));
@@ -399,9 +424,6 @@ main(int argc, char *argv[])
         else
         {
           unsigned pixels = header.cupsWidth;
-
-          if (left_px + pixels > full_width)
-            pixels = full_width - left_px;
 
           memset(out_line, 0xFF, out_bytes);
 

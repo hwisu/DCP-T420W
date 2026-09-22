@@ -130,8 +130,13 @@ def text_of(root, path, default=None):
     return el.text.strip() if el is not None and el.text else default
 
 
+def get_xml(url, timeout):
+    with http("GET", url, timeout=timeout) as resp:
+        return ET.fromstring(resp.read())
+
+
 def get_caps(base):
-    return ET.fromstring(http("GET", f"{base}/ScannerCapabilities", timeout=20).read())
+    return get_xml(f"{base}/ScannerCapabilities", timeout=20)
 
 
 def platen_caps(root):
@@ -207,16 +212,15 @@ def build_settings(version, mode, mime, dpi, intent, width, height):
 
 def scanner_state(base):
     try:
-        root = ET.fromstring(http("GET", f"{base}/ScannerStatus", timeout=15).read())
-        return text_of(root, "pwg:State", "Unknown")
+        return text_of(get_xml(f"{base}/ScannerStatus", timeout=15), "pwg:State", "Unknown")
     except (ScanError, ET.ParseError):
         return "Unknown"
 
 
 def run_scan(base, settings, verbose=False):
-    resp = http("POST", f"{base}/ScanJobs", data=settings,
-                content_type="text/xml", timeout=60)
-    job = resp.headers.get("Location")
+    with http("POST", f"{base}/ScanJobs", data=settings,
+              content_type="text/xml", timeout=60) as resp:
+        job = resp.headers.get("Location")
     if not job:
         raise ScanError("Scanner accepted the job but returned no Location header.")
     # Some firmwares put an unreachable host in Location; keep the one we used.
@@ -224,7 +228,6 @@ def run_scan(base, settings, verbose=False):
     target = urllib.parse.urlsplit(urllib.parse.urljoin(f"{base}/ScanJobs", job))
     job = urllib.parse.urlunsplit((origin.scheme, origin.netloc,
                                   target.path.rstrip("/"), target.query, ""))
-    resp.close()
     if verbose:
         print(f"  job {job}", file=sys.stderr)
 
@@ -264,7 +267,8 @@ def run_scan(base, settings, verbose=False):
 # ---------------------------------------------------------------------------
 
 def png_read(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as fh:
+        data = fh.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ScanError(f"{path}: not a PNG")
     off, idat, w = 8, b"", None
@@ -320,7 +324,8 @@ def png_write(path, w, h, nch, rows):
     out += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, ctype, 0, 0, 0))
     out += chunk(b"IDAT", zlib.compress(raw, 6))
     out += chunk(b"IEND", b"")
-    open(path, "wb").write(out)
+    with open(path, "wb") as fh:
+        fh.write(out)
 
 
 def to_gray(path, threshold=None):

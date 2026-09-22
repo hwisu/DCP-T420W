@@ -4,7 +4,7 @@
 // Python, no sips, no SANE, no ICA plugin. Discovery uses Bonjour, transport
 // is URLSession, and the image work is ImageIO/CoreGraphics.
 //
-// Build:  swiftc -O brscan.swift -o brscan
+// Build:  make -C scanner        (or: swiftc -O -swift-version 6 brscan.swift -o brscan)
 //
 // The DCP-T420W firmware ignores eSCL scan settings entirely - it returns
 // HTTP 201 even for a body of "this is not xml at all", and always scans the
@@ -106,11 +106,31 @@ final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
 
 // MARK: - HTTP
 
+struct HTTPReply: Sendable {
+    let status: Int
+    let location: String?
+    let data: Data
+}
+
+/// Hands the URLSession callback's result to the thread waiting on it.
+private final class Completion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<HTTPReply, Error>?
+
+    var result: Result<HTTPReply, Error>? {
+        lock.lock(); defer { lock.unlock() }
+        return stored
+    }
+
+    func finish(_ value: Result<HTTPReply, Error>) {
+        lock.lock(); defer { lock.unlock() }
+        stored = value
+    }
+}
+
 @discardableResult
 func http(_ method: String, _ url: URL, body: Data? = nil,
-          contentType: String? = nil, timeout: TimeInterval = 300)
-    throws -> (status: Int, headers: [AnyHashable: Any], data: Data) {
-
+          contentType: String? = nil, timeout: TimeInterval = 300) throws -> HTTPReply {
     var req = URLRequest(url: url, timeoutInterval: timeout)
     req.httpMethod = method
     req.httpBody = body
@@ -118,13 +138,15 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
     if let contentType { req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
 
     let sem = DispatchSemaphore(value: 0)
-    var out: (Int, [AnyHashable: Any], Data)?
-    var failure: Error?
-
+    let completion = Completion()
     let task = URLSession.shared.dataTask(with: req) { data, response, error in
-        if let error { failure = error }
-        else if let r = response as? HTTPURLResponse {
-            out = (r.statusCode, r.allHeaderFields, data ?? Data())
+        if let error {
+            completion.finish(.failure(error))
+        } else if let r = response as? HTTPURLResponse {
+            completion.finish(.success(HTTPReply(
+                status: r.statusCode,
+                location: r.value(forHTTPHeaderField: "Location"),
+                data: data ?? Data())))
         }
         sem.signal()
     }
@@ -134,12 +156,15 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
         task.cancel()
         throw ScanError("\(method) \(url.path) timed out")
     }
-    if let failure {
+    switch completion.result {
+    case .success(let reply)?:
+        return reply
+    case .failure(let failure)?:
         throw ScanError("Cannot reach \(url.host ?? "scanner"): "
                         + failure.localizedDescription)
+    case nil:
+        throw ScanError("No response from \(url)")
     }
-    guard let out else { throw ScanError("No response from \(url)") }
-    return out
 }
 
 // MARK: - eSCL
@@ -156,38 +181,41 @@ struct PlatenCaps {
     var hasADF = false
 }
 
-/// eSCL documents are small and regular; pull values by element name.
+/// Text of every element with this local name, optionally under an ancestor.
+/// eSCL documents are small and regular, so matching by name is enough and
+/// sidesteps namespace prefixes that vary between firmwares.
+func values(in doc: XMLDocument, _ name: String, under ancestor: String? = nil) -> [String] {
+    let path = (ancestor.map { "//*[local-name()='\($0)']" } ?? "")
+        + "//*[local-name()='\(name)']"
+    return ((try? doc.nodes(forXPath: path)) ?? []).compactMap {
+        $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 func parseCaps(_ data: Data) throws -> PlatenCaps {
     guard let doc = try? XMLDocument(data: data) else {
         throw ScanError("Could not parse ScannerCapabilities.")
     }
-    func first(_ name: String) -> String? {
-        (try? doc.nodes(forXPath: "//*[local-name()='\(name)']"))?
-            .first?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    func first(_ name: String) -> String? { values(in: doc, name).first }
+    func platen(_ name: String) -> [String] {
+        values(in: doc, name, under: "PlatenInputCaps")
     }
-    func all(_ path: String) -> [String] {
-        ((try? doc.nodes(forXPath: path)) ?? []).compactMap {
-            $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
+
     var c = PlatenCaps()
-    c.makeAndModel = first("MakeAndModel") ?? "?"
-    c.version = first("Version") ?? "2.63"
-    let platen = "//*[local-name()='PlatenInputCaps']"
-    if let w = (try? doc.nodes(forXPath: "\(platen)//*[local-name()='MaxWidth']"))?
-        .first?.stringValue, let n = Int(w) { c.maxWidth = n }
-    if let h = (try? doc.nodes(forXPath: "\(platen)//*[local-name()='MaxHeight']"))?
-        .first?.stringValue, let n = Int(h) { c.maxHeight = n }
+    c.makeAndModel = first("MakeAndModel") ?? c.makeAndModel
+    c.version = first("Version") ?? c.version
+    if let n = platen("MaxWidth").first.flatMap({ Int($0) }) { c.maxWidth = n }
+    if let n = platen("MaxHeight").first.flatMap({ Int($0) }) { c.maxHeight = n }
     guard c.maxWidth > 0, c.maxHeight > 0 else {
         throw ScanError("ScannerCapabilities has invalid platen dimensions.")
     }
-    c.colorModes = all("\(platen)//*[local-name()='ColorMode']")
-    c.formats = Array(Set(all("\(platen)//*[local-name()='DocumentFormat']"))).sorted()
-    c.resolutions = all("\(platen)//*[local-name()='XResolution']")
-    c.intents = all("\(platen)//*[local-name()='Intent']")
+    c.colorModes = platen("ColorMode")
+    c.formats = Array(Set(platen("DocumentFormat"))).sorted()
+    c.resolutions = platen("XResolution")
+    c.intents = platen("Intent")
     c.opticalX = first("MaxOpticalXResolution") ?? ""
     c.opticalY = first("MaxOpticalYResolution") ?? ""
-    c.hasADF = !((try? doc.nodes(forXPath: "//*[local-name()='Adf']")) ?? []).isEmpty
+    c.hasADF = !values(in: doc, "Adf").isEmpty
     return c
 }
 
@@ -222,23 +250,21 @@ func scanSettings(version: String, mode: ColorMode, mime: String, dpi: Int,
 }
 
 func scannerState(base: URL) -> String {
-    guard let (_, _, data) = try? http("GET", base.appendingPathComponent("ScannerStatus"),
-                                       timeout: 15),
-          let doc = try? XMLDocument(data: data),
-          let s = (try? doc.nodes(forXPath: "//*[local-name()='State']"))?
-            .first?.stringValue
+    guard let reply = try? http("GET", base.appendingPathComponent("ScannerStatus"),
+                                timeout: 15),
+          let doc = try? XMLDocument(data: reply.data),
+          let state = values(in: doc, "State").first
     else { return "Unknown" }
-    return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    return state
 }
 
 func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
-    let (status, headers, _) = try http("POST", base.appendingPathComponent("ScanJobs"),
-                                        body: settings, contentType: "text/xml",
-                                        timeout: 60)
-    guard status == 200 || status == 201 else {
-        throw ScanError("Scanner refused the job (HTTP \(status)).")
+    let created = try http("POST", base.appendingPathComponent("ScanJobs"),
+                           body: settings, contentType: "text/xml", timeout: 60)
+    guard created.status == 200 || created.status == 201 else {
+        throw ScanError("Scanner refused the job (HTTP \(created.status)).")
     }
-    guard let location = (headers["Location"] ?? headers["location"]) as? String else {
+    guard let location = created.location else {
         throw ScanError("Scanner accepted the job but returned no Location header.")
     }
 
@@ -252,20 +278,20 @@ func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
     while comps.percentEncodedPath.hasSuffix("/") { comps.percentEncodedPath.removeLast() }
     comps.percentEncodedQuery = target.percentEncodedQuery
     guard let job = comps.url else { throw ScanError("Bad job URL: \(location)") }
-    if verbose { FileHandle.standardError.write("  job \(job)\n".data(using: .utf8)!) }
+    if verbose { err("  job \(job)") }
     defer { _ = try? http("DELETE", job, timeout: 15) } // also release failed jobs
 
+    let next = job.appendingPathComponent("NextDocument")
     var pages: [Data] = []
     while true {
-        let next = job.appendingPathComponent("NextDocument")
-        let (st, _, data) = try http("GET", next)
+        let page = try http("GET", next)
         // 404/410 is the documented end-of-pages signal.
-        if st == 404 || st == 410 { break }
-        guard st == 200 else {
-            throw ScanError("NextDocument returned HTTP \(st).")
+        if page.status == 404 || page.status == 410 { break }
+        guard page.status == 200 else {
+            throw ScanError("NextDocument returned HTTP \(page.status).")
         }
-        guard !data.isEmpty else { throw ScanError("NextDocument returned an empty page.") }
-        pages.append(data)
+        guard !page.data.isEmpty else { throw ScanError("NextDocument returned an empty page.") }
+        pages.append(page.data)
     }
 
     if pages.isEmpty { throw ScanError("Scanner returned no pages.") }
@@ -363,7 +389,49 @@ func write(_ img: CGImage, to url: URL, format: OutputFormat) throws {
 
 // MARK: - CLI
 
-func err(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
+func err(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+
+func platenMM(_ units: Int) -> Double { Double(units) / unitsPerInch * mmPerInch }
+
+func describe(_ caps: PlatenCaps) -> String {
+    var lines = [
+        "Model        \(caps.makeAndModel)",
+        "eSCL version \(caps.version)",
+        "Sources      Platen\(caps.hasADF ? " + ADF" : " only (no document feeder)")",
+        String(format: "Max area     %.0f x %.0f mm",
+               platenMM(caps.maxWidth), platenMM(caps.maxHeight)),
+    ]
+    func list(_ label: String, _ items: [String], _ suffix: String = "") {
+        if !items.isEmpty { lines.append(label + items.joined(separator: ", ") + suffix) }
+    }
+    list("Colour modes ", caps.colorModes)
+    list("Formats      ", caps.formats)
+    list("Resolutions  ", caps.resolutions, " dpi")
+    list("Intents      ", caps.intents)
+    if !caps.opticalX.isEmpty { lines.append("Optical      \(caps.opticalX) x \(caps.opticalY) dpi") }
+    lines += ["",
+              "Note: on the DCP-T420W these are claims only - the firmware",
+              "ignores the settings you send and always scans the full platen",
+              "in colour as JPEG. brscan applies the rest locally."]
+    return lines.joined(separator: "\n")
+}
+
+/// The output format a file name implies, if any.
+func inferredFormat(of path: String) -> OutputFormat? {
+    switch (path as NSString).pathExtension.lowercased() {
+    case "pdf": return .pdf
+    case "jpg", "jpeg": return .jpeg
+    case "png": return .png
+    default: return nil
+    }
+}
+
+/// scan.pdf, scan-2.pdf, scan-3.pdf, ...
+func pageName(_ base: String, index: Int) -> String {
+    guard index > 0 else { return base }
+    let ns = base as NSString
+    return "\(ns.deletingPathExtension)-\(index + 1).\(ns.pathExtension)"
+}
 
 func parseCrop(_ spec: String) throws -> (Double, Double) {
     if let preset = cropPresets[spec.lowercased()] { return preset }
@@ -498,39 +566,11 @@ func main() -> Int32 {
 
         if wantStatus { print(scannerState(base: base)); return 0 }
 
-        let (_, _, capsData) = try http("GET",
-            base.appendingPathComponent("ScannerCapabilities"), timeout: 20)
-        let caps = try parseCaps(capsData)
+        let caps = try parseCaps(http("GET", base.appendingPathComponent("ScannerCapabilities"),
+                                      timeout: 20).data)
+        if wantCaps { print(describe(caps)); return 0 }
 
-        if wantCaps {
-            print("Model        \(caps.makeAndModel)")
-            print("eSCL version \(caps.version)")
-            print("Sources      Platen\(caps.hasADF ? " + ADF" : " only (no document feeder)")")
-            print(String(format: "Max area     %.0f x %.0f mm",
-                         Double(caps.maxWidth) / unitsPerInch * mmPerInch,
-                         Double(caps.maxHeight) / unitsPerInch * mmPerInch))
-            if !caps.colorModes.isEmpty { print("Colour modes \(caps.colorModes.joined(separator: ", "))") }
-            if !caps.formats.isEmpty { print("Formats      \(caps.formats.joined(separator: ", "))") }
-            if !caps.resolutions.isEmpty { print("Resolutions  \(caps.resolutions.joined(separator: ", ")) dpi") }
-            if !caps.intents.isEmpty { print("Intents      \(caps.intents.joined(separator: ", "))") }
-            if !caps.opticalX.isEmpty { print("Optical      \(caps.opticalX) x \(caps.opticalY) dpi") }
-            print("")
-            print("Note: on the DCP-T420W these are claims only - the firmware")
-            print("ignores the settings you send and always scans the full platen")
-            print("in colour as JPEG. brscan applies the rest locally.")
-            return 0
-        }
-
-        var fmt = format
-        if fmt == nil, let o = outPath {
-            switch (o as NSString).pathExtension.lowercased() {
-            case "pdf": fmt = .pdf
-            case "jpg", "jpeg": fmt = .jpeg
-            case "png": fmt = .png
-            default: break
-            }
-        }
-        let outFormat = fmt ?? .pdf
+        let outFormat = format ?? outPath.flatMap(inferredFormat(of:)) ?? .pdf
 
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
@@ -555,15 +595,10 @@ func main() -> Int32 {
         err(String(format: "Scanner returned %d page(s) in %.1fs",
                    pages.count, Date().timeIntervalSince(started)))
 
-        let platenW = Double(caps.maxWidth) / unitsPerInch * mmPerInch
-        let platenH = Double(caps.maxHeight) / unitsPerInch * mmPerInch
+        let platenW = platenMM(caps.maxWidth), platenH = platenMM(caps.maxHeight)
 
         for (i, data) in pages.enumerated() {
-            var name = base0
-            if i > 0 {
-                let ns = base0 as NSString
-                name = "\(ns.deletingPathExtension)-\(i + 1).\(ns.pathExtension)"
-            }
+            let name = pageName(base0, index: i)
             let url = URL(fileURLWithPath: name)
 
             if raw {

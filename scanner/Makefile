@@ -5,7 +5,7 @@
 # ImageIO all come from the system.
 
 SWIFTC  ?= swiftc
-SWIFTFLAGS ?= -O
+SWIFTFLAGS ?= -O -swift-version 6
 TARGET  := brscan
 MIN_OS  := 11
 

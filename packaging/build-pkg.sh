@@ -52,11 +52,10 @@ ditto --norsrc --noextattr --noacl \
 
 # --- 2. Scanner client -----------------------------------------------------
 echo "  building brscan (universal)"
-swiftc -O -target arm64-apple-macos11  "$HERE/scanner/brscan.swift" -o "$STAGE/brscan-arm64"
-swiftc -O -target x86_64-apple-macos11 "$HERE/scanner/brscan.swift" -o "$STAGE/brscan-x86_64"
-lipo -create -output "$PAYLOAD/usr/local/bin/brscan" \
-     "$STAGE/brscan-arm64" "$STAGE/brscan-x86_64"
-rm -f "$STAGE/brscan-arm64" "$STAGE/brscan-x86_64"
+make -s -C "$HERE/scanner" clean >/dev/null
+make -s -C "$HERE/scanner" >/dev/null
+ditto --norsrc --noextattr --noacl \
+    "$HERE/scanner/brscan" "$PAYLOAD/usr/local/bin/brscan"
 
 # --- 3. AirPrint advertiser ------------------------------------------------
 echo "  building brairprint (universal)"

@@ -40,8 +40,10 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 
+#define MODEL_SHORT   "DCP-T420W"
+#define MODEL_NAME    "Brother " MODEL_SHORT
 #define DEFAULT_QUEUE "Brother_DCP_T420W"
-#define DEFAULT_NAME  "Brother DCP-T420W (AirPrint)"
+#define DEFAULT_NAME  MODEL_NAME " (AirPrint)"
 #define DEFAULT_PORT  631
 
 /*
@@ -131,6 +133,44 @@ printer_uuid(const char *queue, int port, char *buf, size_t bufsize)
   httpClose(http);
 
   return found;
+}
+
+/*
+ * Build the TXT record from key/value pairs. Each value is one length-prefixed
+ * string on the wire, so anything over 255 bytes cannot be represented and is
+ * refused rather than silently truncated.
+ */
+static int
+build_txt(TXTRecordRef *txt, const char * const pairs[][2], size_t count)
+{
+  size_t	i;
+
+  TXTRecordCreate(txt, 0, NULL);
+
+  for (i = 0; i < count; i ++)
+  {
+    const char		*key = pairs[i][0], *value = pairs[i][1];
+    size_t		len = strlen(value);
+    DNSServiceErrorType	err;
+
+    if (len > 255)
+    {
+      fprintf(stderr, "ERROR: TXT value for %s is too long (%zu bytes).\n",
+              key, len);
+      TXTRecordDeallocate(txt);
+      return 0;
+    }
+
+    if ((err = TXTRecordSetValue(txt, key, (uint8_t)len, value))
+            != kDNSServiceErr_NoError)
+    {
+      fprintf(stderr, "ERROR: cannot set TXT key %s (%d).\n", key, (int)err);
+      TXTRecordDeallocate(txt);
+      return 0;
+    }
+  }
+
+  return 1;
 }
 
 static void DNSSD_API
@@ -231,21 +271,26 @@ main(int argc, char *argv[])
   snprintf(adminurl, sizeof(adminurl), "http://%s:%d/printers/%s",
            hostname, port, queue);
 
-  TXTRecordCreate(&txt, 0, NULL);
-  TXTRecordSetValue(&txt, "txtvers",  1, "1");
-  TXTRecordSetValue(&txt, "qtotal",   1, "1");
-  TXTRecordSetValue(&txt, "rp",       (uint8_t)strlen(rp), rp);
-  TXTRecordSetValue(&txt, "ty",       17, "Brother DCP-T420W");
-  TXTRecordSetValue(&txt, "product",  11, "(DCP-T420W)");
-  TXTRecordSetValue(&txt, "note",     0,  "");
-  TXTRecordSetValue(&txt, "priority", 1,  "0");
-  TXTRecordSetValue(&txt, "adminurl", (uint8_t)strlen(adminurl), adminurl);
-  TXTRecordSetValue(&txt, "pdl",      (uint8_t)strlen(PDL_SUPPORTED), PDL_SUPPORTED);
-  TXTRecordSetValue(&txt, "URF",      (uint8_t)strlen(URF_SUPPORTED), URF_SUPPORTED);
-  TXTRecordSetValue(&txt, "Color",    1, "T");
-  TXTRecordSetValue(&txt, "Duplex",   1, "F");
-  TXTRecordSetValue(&txt, "Scan",     1, "F");
-  TXTRecordSetValue(&txt, "UUID",     (uint8_t)strlen(uuid), uuid);
+  const char * const txt_pairs[][2] =
+  {
+    { "txtvers",  "1" },
+    { "qtotal",   "1" },
+    { "rp",       rp },
+    { "ty",       MODEL_NAME },
+    { "product",  "(" MODEL_SHORT ")" },
+    { "note",     "" },
+    { "priority", "0" },
+    { "adminurl", adminurl },
+    { "pdl",      PDL_SUPPORTED },
+    { "URF",      URF_SUPPORTED },
+    { "Color",    "T" },
+    { "Duplex",   "F" },
+    { "Scan",     "F" },
+    { "UUID",     uuid },
+  };
+
+  if (!build_txt(&txt, txt_pairs, sizeof(txt_pairs) / sizeof(txt_pairs[0])))
+    return 1;
 
  /*
   * The ",_universal" suffix is the part iOS is actually browsing for. Without

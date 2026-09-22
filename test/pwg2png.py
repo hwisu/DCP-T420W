@@ -79,7 +79,8 @@ def main(argv):
     if "--scale" in argv:
         scale = int(argv[argv.index("--scale") + 1])
 
-    data = open(src, "rb").read()
+    with open(src, "rb") as fh:
+        data = fh.read()
     if data[:4] != b"RaS2":
         raise SystemExit(f"{src}: not big-endian PWG Raster")
 

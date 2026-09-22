@@ -7,7 +7,7 @@ SDK      := $(shell xcrun --show-sdk-path)
 CC       ?= cc
 ARCHS    ?= -arch arm64 -arch x86_64
 MIN_OS   ?= 11.0
-CFLAGS   ?= -Os -Wall -Wextra -Wno-deprecated-declarations -isysroot $(SDK)
+CFLAGS   ?= -Os -Wall -Wextra -isysroot $(SDK)
 LDFLAGS  ?= -isysroot $(SDK) -lcups
 
 TARGET   := rastertobrother

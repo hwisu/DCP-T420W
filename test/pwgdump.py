@@ -59,7 +59,8 @@ def parse_header(buf):
 
 
 def headers(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as fh:
+        data = fh.read()
     sync = data[:4]
     if sync not in (b"RaS2", b"2SaR"):
         raise SystemExit(f"{path}: not PWG Raster (sync {sync!r})")

@@ -48,6 +48,29 @@ cancel_job(int sig)
 }
 
 /*
+ * Job-wide settings, resolved once from the PPD and the job options.
+ */
+typedef struct
+{
+  const char	*media_type;		/* IPP media-type keyword */
+  unsigned	quality;		/* IPP print-quality, 3/4/5 */
+  int		want_gray;		/* Job asked for monochrome output */
+} job_options_t;
+
+/*
+ * Where the rendered band sits on the full-bleed sheet.
+ */
+typedef struct
+{
+  unsigned	xdpi, ydpi;		/* Device resolution */
+  unsigned	full_width, full_height;/* Full-bleed page in pixels */
+  unsigned	left_px, top_px;	/* Offset of the imageable area */
+  unsigned	in_bpp;			/* Bytes per input pixel */
+  float		page_w, page_h;		/* Media size in points */
+  double	media_w, media_h;	/* Media size in hundredths of mm */
+} page_layout_t;
+
+/*
  * Map a PPD *MediaType choice onto the exact IPP keyword the DCP-T420W
  * publishes in media-type-supported. CUPS derives the same keywords from the
  * choice names via pwg_unppdize_name(), but we state them explicitly so the
@@ -70,6 +93,62 @@ media_type_keyword(const char *choice)
 }
 
 /*
+ * Resolve the job options against the queue's PPD.
+ *
+ * The PPD API has been deprecated since macOS 10.8, but it is still the only
+ * way a filter can see the marked choices -- the suggested cupsCopyDestInfo()
+ * talks to a destination, not to the PPD the scheduler hands us. Keep every
+ * PPD call in this one function so the deprecation warning is silenced here
+ * and nowhere else.
+ */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+static void
+load_job_options(const char *option_string, job_options_t *job)
+{
+  cups_option_t	*options = NULL;
+  int		num_options;
+  ppd_file_t	*ppd;
+  ppd_choice_t	*choice;
+
+  job->media_type = "stationery";
+  job->quality    = 4;			/* IPP print-quality: 4 = normal */
+  job->want_gray  = 0;
+
+  num_options = cupsParseOptions(option_string, 0, &options);
+
+  if ((ppd = ppdOpenFile(getenv("PPD"))) == NULL)
+  {
+    fputs("DEBUG: No PPD available, relying on raster header values.\n", stderr);
+    cupsFreeOptions(num_options, options);
+    return;
+  }
+
+  ppdMarkDefaults(ppd);
+  cupsMarkOptions(ppd, num_options, options);
+
+  if ((choice = ppdFindMarkedChoice(ppd, "MediaType")) != NULL)
+    job->media_type = media_type_keyword(choice->choice);
+
+  if ((choice = ppdFindMarkedChoice(ppd, "ColorModel")) != NULL)
+    job->want_gray = !strcasecmp(choice->choice, "Gray");
+
+  if ((choice = ppdFindMarkedChoice(ppd, "cupsPrintQuality")) != NULL)
+  {
+    if (!strcasecmp(choice->choice, "Draft"))
+      job->quality = 3;
+    else if (!strcasecmp(choice->choice, "High"))
+      job->quality = 5;
+  }
+
+  ppdClose(ppd);
+  cupsFreeOptions(num_options, options);
+}
+
+#pragma clang diagnostic pop
+
+/*
  * Round a length in PostScript points to whole device pixels.
  */
 static int
@@ -87,6 +166,253 @@ points_to_pixels(double points, unsigned dpi, unsigned *pixels)
   return (1);
 }
 
+/*
+ * Validate an incoming page header and work out where its band sits on the
+ * full sheet. Returns NULL on success or an error message.
+ */
+static const char *
+layout_page(const cups_page_header2_t *header, page_layout_t *layout)
+{
+ /*
+  * This filter and the printer support only byte-interleaved sgray_8 and
+  * srgb_8. Reject packed, planar and unrelated color spaces before using
+  * their geometry to size or index a line buffer.
+  */
+  if (header->cupsWidth == 0 || header->cupsHeight == 0 ||
+      header->cupsBitsPerColor != 8 ||
+      header->cupsColorOrder != CUPS_ORDER_CHUNKED ||
+      !((header->cupsColorSpace == CUPS_CSPACE_SW &&
+         header->cupsBitsPerPixel == 8) ||
+        (header->cupsColorSpace == CUPS_CSPACE_SRGB &&
+         header->cupsBitsPerPixel == 24)))
+    return ("Unsupported raster pixel format.");
+
+  layout->in_bpp = header->cupsBitsPerPixel / 8;
+
+  if (header->cupsWidth > UINT_MAX / layout->in_bpp ||
+      header->cupsBytesPerLine < header->cupsWidth * layout->in_bpp)
+    return ("Invalid raster line geometry.");
+
+  layout->xdpi = header->HWResolution[0] ? header->HWResolution[0] : 600;
+  layout->ydpi = header->HWResolution[1] ? header->HWResolution[1] : 600;
+
+ /*
+  * Work out the full media box. cupsPageSize is the floating point page size
+  * in points; cupsImagingBBox is the printable rectangle within it. When the
+  * PPD declares a borderless size the two coincide and the padding collapses
+  * to a straight copy.
+  */
+  layout->page_w = header->cupsPageSize[0];
+  layout->page_h = header->cupsPageSize[1];
+
+  if (layout->page_w <= 0.0f || layout->page_h <= 0.0f)
+  {
+    layout->page_w = (float)header->PageSize[0];
+    layout->page_h = (float)header->PageSize[1];
+  }
+
+ /* Validate both the pixel geometry and the signed IPP media dimensions. */
+  layout->media_w = (double)layout->page_w * 2540.0 / 72.0;
+  layout->media_h = (double)layout->page_h * 2540.0 / 72.0;
+
+  if (!(layout->page_w > 0.0f) || !(layout->page_h > 0.0f) ||
+      layout->media_w > (double)INT_MAX - 0.5 ||
+      layout->media_h > (double)INT_MAX - 0.5 ||
+      !points_to_pixels(layout->page_w, layout->xdpi, &layout->full_width) ||
+      !points_to_pixels(layout->page_h, layout->ydpi, &layout->full_height))
+    return ("Invalid raster page size.");
+
+  if (!isfinite(header->cupsImagingBBox[0]) ||
+      !isfinite(header->cupsImagingBBox[1]) ||
+      !isfinite(header->cupsImagingBBox[2]) ||
+      !isfinite(header->cupsImagingBBox[3]))
+    return ("Invalid raster imaging bounds.");
+
+  layout->left_px = 0;
+  layout->top_px  = 0;
+
+  if (header->cupsImagingBBox[2] > header->cupsImagingBBox[0] &&
+      (!points_to_pixels(header->cupsImagingBBox[0], layout->xdpi,
+                         &layout->left_px) ||
+       !points_to_pixels((double)layout->page_h - header->cupsImagingBBox[3],
+                         layout->ydpi, &layout->top_px)))
+    return ("Invalid raster imaging offset.");
+
+ /*
+  * Never let rounding push the rendered band outside the sheet.
+  */
+  if (layout->full_width < header->cupsWidth)
+    layout->full_width = header->cupsWidth;
+  if (layout->full_height < header->cupsHeight)
+    layout->full_height = header->cupsHeight;
+
+  if (layout->left_px > layout->full_width - header->cupsWidth)
+    layout->left_px = layout->full_width - header->cupsWidth;
+  if (layout->top_px > layout->full_height - header->cupsHeight)
+    layout->top_px = layout->full_height - header->cupsHeight;
+
+  return (NULL);
+}
+
+/*
+ * Build the outgoing header. Start from the incoming one so that copies,
+ * orientation and colour space survive, then restate the geometry and the
+ * fields PWG Raster defines. Returns NULL on success or an error message.
+ */
+static const char *
+make_pwg_header(const cups_page_header2_t *header,
+                const page_layout_t       *layout,
+                const job_options_t       *job,
+                cups_page_header2_t       *pwg)
+{
+  pwg_media_t	*media;
+  unsigned	bpp;
+
+  memcpy(pwg, header, sizeof(*pwg));
+
+ /*
+  * The printer accepts sgray_8 and srgb_8 only. cgpdftoraster already
+  * rasterises in grey when ColorModel=Gray, but if colour data arrives for a
+  * monochrome job the pixel copy converts it rather than sending colour.
+  */
+  if (layout->in_bpp < 3 || job->want_gray)
+  {
+    pwg->cupsColorSpace   = CUPS_CSPACE_SW;
+    pwg->cupsNumColors    = 1;
+    pwg->cupsBitsPerPixel = 8;
+  }
+  else
+  {
+    pwg->cupsColorSpace   = CUPS_CSPACE_SRGB;
+    pwg->cupsNumColors    = 3;
+    pwg->cupsBitsPerPixel = 24;
+  }
+
+  pwg->cupsBitsPerColor = 8;
+  pwg->cupsColorOrder   = CUPS_ORDER_CHUNKED;
+  pwg->cupsWidth        = layout->full_width;
+  pwg->cupsHeight       = layout->full_height;
+  pwg->HWResolution[0]  = layout->xdpi;
+  pwg->HWResolution[1]  = layout->ydpi;
+
+  bpp = pwg->cupsBitsPerPixel / 8;
+  if (layout->full_width > UINT_MAX / bpp)
+    return ("Raster output line is too large.");
+
+  pwg->cupsBytesPerLine = bpp * layout->full_width;
+  pwg->cupsCompression  = 0;
+
+ /*
+  * PWG Raster carries the media identity as a self-describing name, and
+  * leaves the margin fields at zero because the image is already full bleed.
+  */
+  if ((media = pwgMediaForSize((int)(layout->media_w + 0.5),
+                               (int)(layout->media_h + 0.5))) != NULL)
+    strlcpy(pwg->cupsPageSizeName, media->pwg, sizeof(pwg->cupsPageSizeName));
+
+  strlcpy(pwg->MediaType, job->media_type, sizeof(pwg->MediaType));
+
+  pwg->cupsPageSize[0] = layout->page_w;
+  pwg->cupsPageSize[1] = layout->page_h;
+  pwg->PageSize[0]     = (unsigned)(layout->page_w + 0.5f);
+  pwg->PageSize[1]     = (unsigned)(layout->page_h + 0.5f);
+
+  memset(pwg->cupsImagingBBox, 0, sizeof(pwg->cupsImagingBBox));
+  memset(pwg->ImagingBoundingBox, 0, sizeof(pwg->ImagingBoundingBox));
+  memset(pwg->Margins, 0, sizeof(pwg->Margins));
+
+  pwg->cupsBorderlessScalingFactor = 1.0f;
+
+ /*
+  * Note: cupsRasterWriteHeader2() normalises the PWG-specific cupsInteger[]
+  * slots itself (TotalPageCount, the feed transforms and AlternatePrimary),
+  * and zeroes the rest, so setting ImageBox* here would be discarded. Print
+  * quality reaches the printer as the IPP print-quality attribute, which the
+  * DCP-T420W lists in print-quality-supported, rather than via the raster.
+  */
+
+ /* The DCP-T420W has no duplexer and a single face-up output bin. */
+  pwg->Duplex       = CUPS_FALSE;
+  pwg->Tumble       = CUPS_FALSE;
+  pwg->OutputFaceUp = CUPS_TRUE;
+
+  return (NULL);
+}
+
+/*
+ * Copy one page's pixels onto the padded sheet. Returns NULL on success
+ * (including cancellation) or an error message.
+ */
+static const char *
+copy_page(cups_raster_t             *in,
+          cups_raster_t             *out,
+          const cups_page_header2_t *header,
+          const cups_page_header2_t *pwg,
+          const page_layout_t       *layout)
+{
+  unsigned	in_bytes  = header->cupsBytesPerLine;
+  unsigned	out_bytes = pwg->cupsBytesPerLine;
+  unsigned	bpp       = pwg->cupsBitsPerPixel / 8;
+  int		convert_gray = (layout->in_bpp >= 3 && bpp == 1);
+  unsigned char	*in_line  = malloc(in_bytes);
+  unsigned char	*out_line = malloc(out_bytes);
+  const char	*error = NULL;
+  unsigned	y;
+
+  if (!in_line || !out_line)
+  {
+    free(in_line);
+    free(out_line);
+    return ("Out of memory allocating raster line buffers.");
+  }
+
+  for (y = 0; y < layout->full_height && !job_canceled; y ++)
+  {
+   /*
+    * White is 0xFF in both sGray and sRGB, so a memset gives us blank paper;
+    * rows outside the rendered band stay exactly that.
+    */
+    memset(out_line, 0xFF, out_bytes);
+
+    if (y >= layout->top_px && y < layout->top_px + header->cupsHeight)
+    {
+      if (cupsRasterReadPixels(in, in_line, in_bytes) != in_bytes)
+      {
+        error = "Truncated raster page.";
+        break;
+      }
+
+      if (convert_gray)
+      {
+       /*
+        * Rec. 601 luma, computed on the sRGB values as CUPS does.
+        */
+        const unsigned char	*src = in_line;
+        unsigned char		*dst = out_line + layout->left_px;
+        unsigned		i;
+
+        for (i = 0; i < header->cupsWidth; i ++, src += layout->in_bpp)
+          *dst++ = (unsigned char)((77u * src[0] + 151u * src[1] +
+                                    28u * src[2]) >> 8);
+      }
+      else
+        memcpy(out_line + layout->left_px * bpp, in_line,
+               header->cupsWidth * bpp);
+    }
+
+    if (cupsRasterWritePixels(out, out_line, out_bytes) == 0)
+    {
+      error = "Unable to write PWG raster line.";
+      break;
+    }
+  }
+
+  free(in_line);
+  free(out_line);
+
+  return (error);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -95,13 +421,10 @@ main(int argc, char *argv[])
   cups_raster_t		*out = NULL;	/* Outgoing PWG raster */
   cups_page_header2_t	header;		/* Page header as rendered */
   cups_page_header2_t	pwg;		/* Page header as sent */
-  ppd_file_t		*ppd = NULL;	/* PPD for this queue */
-  cups_option_t		*options = NULL;/* Job options */
-  int			num_options = 0;
-  ppd_choice_t		*choice;
-  unsigned char		*in_line = NULL, *out_line = NULL;
+  job_options_t		job;		/* Job-wide settings */
+  page_layout_t		layout;		/* Current page geometry */
+  const char		*error = NULL;	/* First fatal error */
   unsigned		page = 0;
-  int			exit_status = 0;
   struct sigaction	action;
 
   if (argc < 6 || argc > 7)
@@ -118,372 +441,65 @@ main(int argc, char *argv[])
   action.sa_handler = cancel_job;
   sigaction(SIGTERM, &action, NULL);
 
-  if (argc == 7)
+  if (argc == 7 && (fd = open(argv[6], O_RDONLY)) < 0)
   {
-    if ((fd = open(argv[6], O_RDONLY)) < 0)
-    {
-      fprintf(stderr, "ERROR: Unable to open raster file \"%s\": %s\n",
-              argv[6], strerror(errno));
-      return (1);
-    }
-  }
-
-  num_options = cupsParseOptions(argv[5], 0, &options);
-
-  if ((ppd = ppdOpenFile(getenv("PPD"))) != NULL)
-  {
-    ppdMarkDefaults(ppd);
-    cupsMarkOptions(ppd, num_options, options);
-  }
-  else
-    fputs("DEBUG: No PPD available, relying on raster header values.\n", stderr);
-
-  if ((in = cupsRasterOpen(fd, CUPS_RASTER_READ)) == NULL)
-  {
-    fputs("ERROR: Unable to read CUPS raster stream.\n", stderr);
-    exit_status = 1;
-    goto cleanup;
-  }
-
-  if ((out = cupsRasterOpen(1, CUPS_RASTER_WRITE_PWG)) == NULL)
-  {
-    fputs("ERROR: Unable to open PWG raster output stream.\n", stderr);
-    exit_status = 1;
-    goto cleanup;
+    fprintf(stderr, "ERROR: Unable to open raster file \"%s\": %s\n",
+            argv[6], strerror(errno));
+    return (1);
   }
 
  /*
-  * Resolve the media type once; it is a queue/job option, not a per-page value.
+  * Media type, colour and quality are queue/job options, not per-page values.
   */
-  const char	*type_keyword = "stationery";
-  unsigned	quality = 4;		/* IPP print-quality: 4 = normal */
-  int		want_gray = 0;		/* Job asked for monochrome output */
+  load_job_options(argv[5], &job);
 
-  if (ppd && (choice = ppdFindMarkedChoice(ppd, "MediaType")) != NULL)
-    type_keyword = media_type_keyword(choice->choice);
+  if ((in = cupsRasterOpen(fd, CUPS_RASTER_READ)) == NULL)
+    error = "Unable to read CUPS raster stream.";
+  else if ((out = cupsRasterOpen(1, CUPS_RASTER_WRITE_PWG)) == NULL)
+    error = "Unable to open PWG raster output stream.";
 
-  if (ppd && (choice = ppdFindMarkedChoice(ppd, "ColorModel")) != NULL)
-    want_gray = !strcasecmp(choice->choice, "Gray");
-
-  if (ppd && (choice = ppdFindMarkedChoice(ppd, "cupsPrintQuality")) != NULL)
+  while (!error && !job_canceled && cupsRasterReadHeader2(in, &header))
   {
-    if (!strcasecmp(choice->choice, "Draft"))
-      quality = 3;
-    else if (!strcasecmp(choice->choice, "High"))
-      quality = 5;
-  }
-
-  while (!job_canceled && cupsRasterReadHeader2(in, &header))
-  {
-    unsigned	xdpi, ydpi;		/* Device resolution */
-    unsigned	full_width, full_height;/* Full-bleed page in pixels */
-    unsigned	left_px, top_px;	/* Offset of the imageable area */
-    unsigned	bpp;			/* Bytes per output pixel */
-    unsigned	in_bpp;			/* Bytes per input pixel */
-    unsigned	in_bytes, out_bytes;	/* Line lengths */
-    unsigned	y;
-    pwg_media_t	*media;
-
     page ++;
     fprintf(stderr, "PAGE: %u %u\n", page, header.NumCopies ? header.NumCopies : 1);
 
-   /*
-    * This filter and the printer support only byte-interleaved sgray_8 and
-    * srgb_8. Reject packed, planar and unrelated color spaces before using
-    * their geometry to size or index a line buffer.
-    */
-    if (header.cupsWidth == 0 || header.cupsHeight == 0 ||
-        header.cupsBitsPerColor != 8 ||
-        header.cupsColorOrder != CUPS_ORDER_CHUNKED ||
-        !((header.cupsColorSpace == CUPS_CSPACE_SW &&
-           header.cupsBitsPerPixel == 8) ||
-          (header.cupsColorSpace == CUPS_CSPACE_SRGB &&
-           header.cupsBitsPerPixel == 24)))
-    {
-      fputs("ERROR: Unsupported raster pixel format.\n", stderr);
-      exit_status = 1;
+    if ((error = layout_page(&header, &layout)) != NULL ||
+        (error = make_pwg_header(&header, &layout, &job, &pwg)) != NULL)
       break;
-    }
-
-    in_bpp = header.cupsBitsPerPixel / 8;
-
-    if (header.cupsWidth > UINT_MAX / in_bpp ||
-        header.cupsBytesPerLine < header.cupsWidth * in_bpp)
-    {
-      fputs("ERROR: Invalid raster line geometry.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-    xdpi = header.HWResolution[0] ? header.HWResolution[0] : 600;
-    ydpi = header.HWResolution[1] ? header.HWResolution[1] : 600;
-
-   /*
-    * Work out the full media box. cupsPageSize is the floating point page size
-    * in points; cupsImagingBBox is the printable rectangle within it. When the
-    * PPD declares a borderless size the two coincide and the padding below
-    * collapses to a straight copy.
-    */
-    float	page_w = header.cupsPageSize[0];
-    float	page_h = header.cupsPageSize[1];
-
-    if (page_w <= 0.0f || page_h <= 0.0f)
-    {
-      page_w = (float)header.PageSize[0];
-      page_h = (float)header.PageSize[1];
-    }
-
-   /* Validate both the pixel geometry and the signed IPP media dimensions. */
-    double media_w = (double)page_w * 2540.0 / 72.0;
-    double media_h = (double)page_h * 2540.0 / 72.0;
-
-    if (!(page_w > 0.0f) || !(page_h > 0.0f) ||
-        media_w > (double)INT_MAX - 0.5 ||
-        media_h > (double)INT_MAX - 0.5 ||
-        !points_to_pixels(page_w, xdpi, &full_width) ||
-        !points_to_pixels(page_h, ydpi, &full_height))
-    {
-      fputs("ERROR: Invalid raster page size.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-    if (!isfinite(header.cupsImagingBBox[0]) ||
-        !isfinite(header.cupsImagingBBox[1]) ||
-        !isfinite(header.cupsImagingBBox[2]) ||
-        !isfinite(header.cupsImagingBBox[3]))
-    {
-      fputs("ERROR: Invalid raster imaging bounds.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-    if (header.cupsImagingBBox[2] > header.cupsImagingBBox[0])
-    {
-      if (!points_to_pixels(header.cupsImagingBBox[0], xdpi, &left_px) ||
-          !points_to_pixels((double)page_h - header.cupsImagingBBox[3],
-                            ydpi, &top_px))
-      {
-        fputs("ERROR: Invalid raster imaging offset.\n", stderr);
-        exit_status = 1;
-        break;
-      }
-    }
-    else
-    {
-      left_px = 0;
-      top_px  = 0;
-    }
-
-   /*
-    * Never let rounding push the rendered band outside the sheet.
-    */
-    if (full_width < header.cupsWidth)
-      full_width = header.cupsWidth;
-    if (full_height < header.cupsHeight)
-      full_height = header.cupsHeight;
-
-    if (left_px > full_width - header.cupsWidth)
-      left_px = full_width - header.cupsWidth;
-    if (top_px > full_height - header.cupsHeight)
-      top_px = full_height - header.cupsHeight;
-
-   /*
-    * Build the outgoing header. Start from the incoming one so that copies,
-    * orientation and colour space survive, then restate the geometry and the
-    * fields PWG Raster defines.
-    */
-    memcpy(&pwg, &header, sizeof(pwg));
-
-    int		convert_gray = 0;
-
-   /*
-    * The printer accepts sgray_8 and srgb_8 only. cgpdftoraster already
-    * rasterises in grey when ColorModel=Gray, but if colour data arrives for a
-    * monochrome job we do the conversion here rather than sending colour.
-    */
-    if (in_bpp < 3 || want_gray)
-    {
-      pwg.cupsColorSpace   = CUPS_CSPACE_SW;
-      pwg.cupsNumColors    = 1;
-      pwg.cupsBitsPerPixel = 8;
-      convert_gray         = (in_bpp >= 3);
-    }
-    else
-    {
-      pwg.cupsColorSpace   = CUPS_CSPACE_SRGB;
-      pwg.cupsNumColors    = 3;
-      pwg.cupsBitsPerPixel = 24;
-    }
-
-    pwg.cupsBitsPerColor = 8;
-    pwg.cupsColorOrder   = CUPS_ORDER_CHUNKED;
-    pwg.cupsWidth        = full_width;
-    pwg.cupsHeight       = full_height;
-    pwg.HWResolution[0]  = xdpi;
-    pwg.HWResolution[1]  = ydpi;
-
-    bpp = pwg.cupsBitsPerPixel / 8;
-    if (full_width > UINT_MAX / bpp)
-    {
-      fputs("ERROR: Raster output line is too large.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-    pwg.cupsBytesPerLine = bpp * full_width;
-    pwg.cupsCompression  = 0;
-
-   /*
-    * PWG Raster carries the media identity as a self-describing name, and
-    * leaves the margin fields at zero because the image is already full bleed.
-    */
-    if ((media = pwgMediaForSize((int)(media_w + 0.5),
-                                 (int)(media_h + 0.5))) != NULL)
-      strlcpy(pwg.cupsPageSizeName, media->pwg, sizeof(pwg.cupsPageSizeName));
-
-    strlcpy(pwg.MediaType, type_keyword, sizeof(pwg.MediaType));
-
-    pwg.cupsPageSize[0] = page_w;
-    pwg.cupsPageSize[1] = page_h;
-    pwg.PageSize[0]     = (unsigned)(page_w + 0.5f);
-    pwg.PageSize[1]     = (unsigned)(page_h + 0.5f);
-
-    pwg.cupsImagingBBox[0] = 0.0f;
-    pwg.cupsImagingBBox[1] = 0.0f;
-    pwg.cupsImagingBBox[2] = 0.0f;
-    pwg.cupsImagingBBox[3] = 0.0f;
-    memset(pwg.ImagingBoundingBox, 0, sizeof(pwg.ImagingBoundingBox));
-    memset(pwg.Margins, 0, sizeof(pwg.Margins));
-
-    pwg.cupsBorderlessScalingFactor = 1.0f;
-
-   /*
-    * Note: cupsRasterWriteHeader2() normalises the PWG-specific cupsInteger[]
-    * slots itself (TotalPageCount, the feed transforms and AlternatePrimary),
-    * and zeroes the rest, so setting ImageBox* here would be discarded. Print
-    * quality reaches the printer as the IPP print-quality attribute, which the
-    * DCP-T420W lists in print-quality-supported, rather than via the raster.
-    */
-
-   /* The DCP-T420W has no duplexer and a single face-up output bin. */
-    pwg.Duplex       = CUPS_FALSE;
-    pwg.Tumble       = CUPS_FALSE;
-    pwg.OutputFaceUp = CUPS_TRUE;
 
     fprintf(stderr,
             "DEBUG: Page %u: rendered %ux%u -> sheet %ux%u at %ux%udpi, "
             "offset %u,%u, %s, media=%s type=%s quality=%u\n",
-            page, header.cupsWidth, header.cupsHeight, full_width, full_height,
-            xdpi, ydpi, left_px, top_px,
+            page, header.cupsWidth, header.cupsHeight,
+            layout.full_width, layout.full_height, layout.xdpi, layout.ydpi,
+            layout.left_px, layout.top_px,
             pwg.cupsColorSpace == CUPS_CSPACE_SW ? "sgray_8" : "srgb_8",
-            pwg.cupsPageSizeName, pwg.MediaType, quality);
+            pwg.cupsPageSizeName, pwg.MediaType, job.quality);
 
     if (!cupsRasterWriteHeader2(out, &pwg))
-    {
-      fputs("ERROR: Unable to write PWG raster page header.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-    in_bytes  = header.cupsBytesPerLine;
-    out_bytes = pwg.cupsBytesPerLine;
-
-    free(in_line);
-    free(out_line);
-    in_line  = malloc(in_bytes);
-    out_line = malloc(out_bytes);
-
-    if (!in_line || !out_line)
-    {
-      fputs("ERROR: Out of memory allocating raster line buffers.\n", stderr);
-      exit_status = 1;
-      break;
-    }
-
-   /*
-    * White is 0xFF in both sGray and sRGB, so a memset gives us blank paper.
-    */
-    memset(out_line, 0xFF, out_bytes);
-
-    for (y = 0; y < full_height && !job_canceled; y ++)
-    {
-      if (y < top_px || y >= top_px + header.cupsHeight)
-      {
-       /* Margin band above or below the rendered area. */
-        memset(out_line, 0xFF, out_bytes);
-      }
-      else
-      {
-        if (cupsRasterReadPixels(in, in_line, in_bytes) != in_bytes)
-        {
-          fputs("ERROR: Truncated raster page.\n", stderr);
-          exit_status = 1;
-          break;
-        }
-        else
-        {
-          unsigned pixels = header.cupsWidth;
-
-          memset(out_line, 0xFF, out_bytes);
-
-          if (convert_gray)
-          {
-           /*
-            * Rec. 601 luma, computed on the sRGB values as CUPS does.
-            */
-            const unsigned char	*src = in_line;
-            unsigned char	*dst = out_line + left_px;
-            unsigned		i;
-
-            for (i = 0; i < pixels; i ++, src += in_bpp)
-              *dst++ = (unsigned char)((77u * src[0] + 151u * src[1] +
-                                        28u * src[2]) >> 8);
-          }
-          else
-            memcpy(out_line + left_px * bpp, in_line, pixels * bpp);
-        }
-      }
-
-      if (cupsRasterWritePixels(out, out_line, out_bytes) == 0)
-      {
-        fputs("ERROR: Unable to write PWG raster line.\n", stderr);
-        exit_status = 1;
-        break;
-      }
-    }
-
-    if (exit_status)
-      break;
+      error = "Unable to write PWG raster page header.";
+    else
+      error = copy_page(in, out, &header, &pwg, &layout);
   }
 
-  if (page == 0 && !exit_status)
-  {
-    fputs("ERROR: No pages found in the raster stream.\n", stderr);
-    exit_status = 1;
-  }
-  else if (!exit_status)
+  if (!error && page == 0)
+    error = "No pages found in the raster stream.";
+
+  if (error)
+    fprintf(stderr, "ERROR: %s\n", error);
+  else
     fprintf(stderr, "DEBUG: Converted %u page(s) to PWG Raster.\n", page);
 
   if (job_canceled)
     fputs("DEBUG: Job canceled.\n", stderr);
 
-cleanup:
-
-  free(in_line);
-  free(out_line);
-
   if (in)
     cupsRasterClose(in);
   if (out)
     cupsRasterClose(out);
-  if (ppd)
-    ppdClose(ppd);
-
-  cupsFreeOptions(num_options, options);
 
   if (fd > 0)
     close(fd);
 
-  return (exit_status);
+  return (error ? 1 : 0);
 }

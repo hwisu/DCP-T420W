@@ -68,7 +68,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.3.1.pkg -target /
+sudo installer -pkg DCP-T420W-1.3.2.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -166,7 +166,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.3.1.pkg \
+sudo installer -pkg DCP-T420W-1.3.2.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 

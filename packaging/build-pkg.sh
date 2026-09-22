@@ -10,7 +10,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-1.3.1}"
+VERSION="${1:-1.3.2}"
 IDENTIFIER="com.hwisu.dcp-t420w"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$HERE/build"

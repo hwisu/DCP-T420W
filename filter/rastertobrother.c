@@ -104,13 +104,14 @@ media_type_keyword(const char *choice)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-static void
+static const char *
 load_job_options(const char *option_string, job_options_t *job)
 {
   cups_option_t	*options = NULL;
   int		num_options;
   ppd_file_t	*ppd;
   ppd_choice_t	*choice;
+  const char	*error = NULL;
 
   job->media_type = "stationery";
   job->quality    = 4;			/* IPP print-quality: 4 = normal */
@@ -122,11 +123,14 @@ load_job_options(const char *option_string, job_options_t *job)
   {
     fputs("DEBUG: No PPD available, relying on raster header values.\n", stderr);
     cupsFreeOptions(num_options, options);
-    return;
+    return (NULL);
   }
 
   ppdMarkDefaults(ppd);
   cupsMarkOptions(ppd, num_options, options);
+
+  if (ppdConflicts(ppd))
+    error = "Conflicting print options (check paper size and media type).";
 
   if ((choice = ppdFindMarkedChoice(ppd, "MediaType")) != NULL)
     job->media_type = media_type_keyword(choice->choice);
@@ -144,6 +148,7 @@ load_job_options(const char *option_string, job_options_t *job)
 
   ppdClose(ppd);
   cupsFreeOptions(num_options, options);
+  return (error);
 }
 
 #pragma clang diagnostic pop
@@ -193,8 +198,17 @@ layout_page(const cups_page_header2_t *header, page_layout_t *layout)
       header->cupsBytesPerLine < header->cupsWidth * layout->in_bpp)
     return ("Invalid raster line geometry.");
 
-  layout->xdpi = header->HWResolution[0] ? header->HWResolution[0] : 600;
-  layout->ydpi = header->HWResolution[1] ? header->HWResolution[1] : 600;
+  layout->xdpi = header->HWResolution[0];
+  layout->ydpi = header->HWResolution[1];
+
+ /* Match pwg-raster-document-resolution-supported, not the UI alone. */
+  if ((layout->xdpi != 300 && layout->xdpi != 600) ||
+      layout->ydpi != layout->xdpi)
+    return ("Unsupported raster resolution (expected 300 or 600 dpi).");
+
+ /* The PPD requests host-generated copies; never multiply them again. */
+  if (header->NumCopies > 1)
+    return ("Raster copies must be expanded by the renderer.");
 
  /*
   * Work out the full media box. cupsPageSize is the floating point page size
@@ -205,10 +219,31 @@ layout_page(const cups_page_header2_t *header, page_layout_t *layout)
   layout->page_w = header->cupsPageSize[0];
   layout->page_h = header->cupsPageSize[1];
 
-  if (layout->page_w <= 0.0f || layout->page_h <= 0.0f)
+  if (layout->page_w == 0.0f && layout->page_h == 0.0f)
   {
     layout->page_w = (float)header->PageSize[0];
     layout->page_h = (float)header->PageSize[1];
+  }
+
+ /*
+  * PWG stores PageSize in whole points. Apple's renderer truncates that
+  * field, losing up to one point (8.3 pixels at 600 dpi). Its raster is
+  * already edge-to-edge, so use the pixel extent for precise geometry while
+  * checking that it agrees with the coarsely declared size. Plain CUPS
+  * raster can describe an inset band and must retain its full media box.
+  */
+  if (!strcmp(header->MediaClass, "PwgRaster"))
+  {
+    double raster_w = (double)header->cupsWidth * 72.0 / layout->xdpi;
+    double raster_h = (double)header->cupsHeight * 72.0 / layout->ydpi;
+
+    if (!isfinite(layout->page_w) || !isfinite(layout->page_h) ||
+        fabs(layout->page_w - raster_w) > 1.01 ||
+        fabs(layout->page_h - raster_h) > 1.01)
+      return ("PWG raster dimensions disagree with the declared page size.");
+
+    layout->page_w = (float)raster_w;
+    layout->page_h = (float)raster_h;
   }
 
  /* Validate both the pixel geometry and the signed IPP media dimensions. */
@@ -222,6 +257,24 @@ layout_page(const cups_page_header2_t *header, page_layout_t *layout)
       !points_to_pixels(layout->page_h, layout->ydpi, &layout->full_height))
     return ("Invalid raster page size.");
 
+ /*
+  * The same custom media range as scripts/genppd.py, in hundredths of mm.
+  * A 0.01 mm tolerance accommodates floating point PPD dimensions. Raster
+  * data is in feed orientation even when the document is landscape.
+  */
+  if (layout->media_w < 8890.0 - 1.0 || layout->media_w > 21590.0 + 1.0 ||
+      layout->media_h < 12700.0 - 1.0 || layout->media_h > 35560.0 + 1.0)
+    return ("Unsupported raster media size.");
+
+ /*
+  * Allow one pixel of page-size rounding, never an arbitrarily larger band.
+  * Bound the input allocation too, allowing at most 32-bit row alignment.
+  */
+  if (header->cupsWidth > layout->full_width + 1 ||
+      header->cupsHeight > layout->full_height + 1 ||
+      header->cupsBytesPerLine > ((header->cupsWidth * layout->in_bpp + 3u) & ~3u))
+    return ("Raster band exceeds the declared page geometry.");
+
   if (!isfinite(header->cupsImagingBBox[0]) ||
       !isfinite(header->cupsImagingBBox[1]) ||
       !isfinite(header->cupsImagingBBox[2]) ||
@@ -230,6 +283,20 @@ layout_page(const cups_page_header2_t *header, page_layout_t *layout)
 
   layout->left_px = 0;
   layout->top_px  = 0;
+
+  if (header->cupsImagingBBox[0] != 0.0f || header->cupsImagingBBox[1] != 0.0f ||
+      header->cupsImagingBBox[2] != 0.0f || header->cupsImagingBBox[3] != 0.0f)
+  {
+    double tolerance = 72.0 / layout->xdpi;
+
+    if (header->cupsImagingBBox[0] < -tolerance ||
+        header->cupsImagingBBox[1] < -tolerance ||
+        header->cupsImagingBBox[2] <= header->cupsImagingBBox[0] ||
+        header->cupsImagingBBox[3] <= header->cupsImagingBBox[1] ||
+        header->cupsImagingBBox[2] > layout->page_w + tolerance ||
+        header->cupsImagingBBox[3] > layout->page_h + tolerance)
+      return ("Raster imaging bounds exceed the declared page.");
+  }
 
   if (header->cupsImagingBBox[2] > header->cupsImagingBBox[0] &&
       (!points_to_pixels(header->cupsImagingBBox[0], layout->xdpi,
@@ -245,6 +312,10 @@ layout_page(const cups_page_header2_t *header, page_layout_t *layout)
     layout->full_width = header->cupsWidth;
   if (layout->full_height < header->cupsHeight)
     layout->full_height = header->cupsHeight;
+
+  if (layout->left_px > layout->full_width - header->cupsWidth + 1 ||
+      layout->top_px > layout->full_height - header->cupsHeight + 1)
+    return ("Raster image offset exceeds the declared page.");
 
   if (layout->left_px > layout->full_width - header->cupsWidth)
     layout->left_px = layout->full_width - header->cupsWidth;
@@ -269,6 +340,7 @@ make_pwg_header(const cups_page_header2_t *header,
   unsigned	bpp;
 
   memcpy(pwg, header, sizeof(*pwg));
+  pwg->NumCopies = 1; /* URF omits this field; all copies are explicit pages. */
 
  /*
   * The printer accepts sgray_8 and srgb_8 only. cgpdftoraster already
@@ -306,8 +378,13 @@ make_pwg_header(const cups_page_header2_t *header,
   * PWG Raster carries the media identity as a self-describing name, and
   * leaves the margin fields at zero because the image is already full bleed.
   */
-  if ((media = pwgMediaForSize((int)(layout->media_w + 0.5),
-                               (int)(layout->media_h + 0.5))) != NULL)
+  /* libcups' media table predates Brother's India Legal keyword. */
+  if (fabs(layout->media_w - 21500.0) <= 2540.0 / layout->xdpi + 1.0 &&
+      fabs(layout->media_h - 34500.0) <= 2540.0 / layout->ydpi + 1.0)
+    strlcpy(pwg->cupsPageSizeName, "om_india-legal_215x345mm",
+            sizeof(pwg->cupsPageSizeName));
+  else if ((media = pwgMediaForSize((int)(layout->media_w + 0.5),
+                                   (int)(layout->media_h + 0.5))) != NULL)
     strlcpy(pwg->cupsPageSizeName, media->pwg, sizeof(pwg->cupsPageSizeName));
 
   strlcpy(pwg->MediaType, job->media_type, sizeof(pwg->MediaType));
@@ -378,7 +455,8 @@ copy_page(cups_raster_t             *in,
     {
       if (cupsRasterReadPixels(in, in_line, in_bytes) != in_bytes)
       {
-        error = "Truncated raster page.";
+        if (!job_canceled)
+          error = "Truncated raster page.";
         break;
       }
 
@@ -426,6 +504,8 @@ main(int argc, char *argv[])
   const char		*error = NULL;	/* First fatal error */
   unsigned		page = 0;
   struct sigaction	action;
+  const char		*content_type = getenv("CONTENT_TYPE");
+  int			report_pages;
 
   if (argc < 6 || argc > 7)
   {
@@ -434,12 +514,23 @@ main(int argc, char *argv[])
   }
 
  /*
+  * CONTENT_TYPE is the original job format for the whole CUPS chain.
+  * cgpdftoraster already emits PAGE for PDF/image jobs. Count only direct
+  * raster jobs here, otherwise the scheduler counts every sheet twice.
+  */
+  report_pages = !content_type ||
+                 !strcmp(content_type, "application/vnd.cups-raster") ||
+                 !strcmp(content_type, "image/pwg-raster") ||
+                 !strcmp(content_type, "image/urf");
+
+ /*
   * Register for cancellation before we start consuming the stream.
   */
   memset(&action, 0, sizeof(action));
   sigemptyset(&action.sa_mask);
   action.sa_handler = cancel_job;
   sigaction(SIGTERM, &action, NULL);
+  signal(SIGPIPE, SIG_IGN);
 
   if (argc == 7 && (fd = open(argv[6], O_RDONLY)) < 0)
   {
@@ -451,18 +542,16 @@ main(int argc, char *argv[])
  /*
   * Media type, colour and quality are queue/job options, not per-page values.
   */
-  load_job_options(argv[5], &job);
+  error = load_job_options(argv[5], &job);
 
-  if ((in = cupsRasterOpen(fd, CUPS_RASTER_READ)) == NULL)
+  if (!error && (in = cupsRasterOpen(fd, CUPS_RASTER_READ)) == NULL)
     error = "Unable to read CUPS raster stream.";
-  else if ((out = cupsRasterOpen(1, CUPS_RASTER_WRITE_PWG)) == NULL)
+  if (!error && (out = cupsRasterOpen(1, CUPS_RASTER_WRITE_PWG)) == NULL)
     error = "Unable to open PWG raster output stream.";
 
   while (!error && !job_canceled && cupsRasterReadHeader2(in, &header))
   {
     page ++;
-    fprintf(stderr, "PAGE: %u %u\n", page, header.NumCopies ? header.NumCopies : 1);
-
     if ((error = layout_page(&header, &layout)) != NULL ||
         (error = make_pwg_header(&header, &layout, &job, &pwg)) != NULL)
       break;
@@ -480,9 +569,12 @@ main(int argc, char *argv[])
       error = "Unable to write PWG raster page header.";
     else
       error = copy_page(in, out, &header, &pwg, &layout);
+
+    if (!error && !job_canceled && report_pages)
+      fprintf(stderr, "PAGE: %u 1\n", page);
   }
 
-  if (!error && page == 0)
+  if (!error && !job_canceled && page == 0)
     error = "No pages found in the raster stream.";
 
   if (error)

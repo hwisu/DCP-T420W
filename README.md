@@ -68,7 +68,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.3.2.pkg -target /
+sudo installer -pkg DCP-T420W-1.3.3.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -166,7 +166,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.3.2.pkg \
+sudo installer -pkg DCP-T420W-1.3.3.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -424,6 +424,39 @@ The macOS PDF pipeline tests also verify quality, borderless paper, and odd/even
 page selection through `cgpdftoraster`.
 `BROTHER_FILTER` and `BROTHER_SCANNER` can point to sanitizer builds or binaries
 extracted from an installer package.
+
+### Device limits and error handling
+
+The final filter enforces the DCP-T420W's supported 300×300 and 600×600 dpi
+PWG resolutions and its 88.9–215.9 mm wide, 127–355.6 mm long media range.
+It rejects oversized raster bands, invalid image offsets, unbounded row
+padding, and conflicting PPD options such as borderless plain paper. Copies
+must already be expanded by the renderer, as requested by `cupsManualCopies`;
+the filter rejects a second per-page copy multiplier. Cancellation and closed
+output pipes stop conversion, and incomplete pages are not counted as finished.
+
+Regression tests cover every advertised paper size, landscape rendering,
+1/10/11-copy jobs, Apple's PWG/URF output, malformed input, cancellation, and
+broken output pipes. Whole-point PWG media dimensions are reconciled with
+the pixel extent. PDF/image page accounting is left to Apple's renderer;
+the final filter counts direct raster jobs, avoiding duplicate sheet counts.
+These are offline format and behavior checks, not a hardware thermal test.
+The driver sends standard PWG Raster over CUPS/IPP and does not control motor
+current, printhead drive signals, or thermal protection. No fixed page-delay
+policy is imposed: host-side delays cannot guarantee that a buffered printer
+pauses its mechanism.
+
+After upgrading, verify the package receipt and the executable actually used
+by CUPS; updating a repository checkout alone does not replace the installed
+filter:
+
+```sh
+pkgutil --pkg-info com.hwisu.dcp-t420w
+shasum -a 256 /usr/libexec/cups/filter/rastertobrother
+```
+
+The behavior follows the [CUPS filter interface](https://openprinting.github.io/cups/doc/api-filter.html)
+and the [PWG Raster client requirements, section 6.4](https://ftp.pwg.org/pub/pwg/candidates/cs-ippraster10-20120420-5102.4.pdf).
 
 The driver was checked without printing, by decoding its own output:
 

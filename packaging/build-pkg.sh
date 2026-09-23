@@ -10,7 +10,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-1.3.2}"
+VERSION="${1:-1.3.3}"
 IDENTIFIER="com.hwisu.dcp-t420w"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$HERE/build"
@@ -30,7 +30,6 @@ trap 'rm -rf "$STAGE"' EXIT
 
 echo "Building Brother DCP-T420W driver $VERSION"
 
-rm -rf "$BUILD"
 mkdir -p "$BUILD"
 mkdir -p "$PAYLOAD/usr/libexec/cups/filter" \
          "$PAYLOAD/usr/local/bin" \

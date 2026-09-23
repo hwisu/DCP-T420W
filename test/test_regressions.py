@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline regression tests. Build filter/ and scanner/ before running.
 
-Rasters are tiny synthetic CUPS streams; scanners are loopback HTTP servers.
+Rasters contain a tiny image on supported media; scanners are loopback servers.
 No test discovers, installs, scans from or prints to a physical device.
 Set BROTHER_FILTER / BROTHER_SCANNER to test sanitizer or packaged binaries.
 """
@@ -10,7 +10,9 @@ import contextlib
 import http.server
 import os
 from pathlib import Path
+import select
 import socket
+import signal
 import struct
 import subprocess
 import sys
@@ -29,8 +31,9 @@ CLIENTS = [[SCANNER], [sys.executable, str(ROOT / "scanner/brscan.py")]]
 
 
 def raster(**overrides):
-    values = dict(HWResolution=[72, 72], cupsPageSize=[4, 4],
-                  PageSize=[4, 4], cupsImagingBBox=[1, 1, 3, 3],
+    # A 2x2 image offset by one pixel on 3.5x5 inch paper at 300 dpi.
+    values = dict(HWResolution=[300, 300], cupsPageSize=[252, 360],
+                  PageSize=[252, 360], cupsImagingBBox=[0.24, 359.28, 0.72, 359.76],
                   cupsWidth=2, cupsHeight=2, cupsBitsPerColor=8,
                   cupsBitsPerPixel=24, cupsBytesPerLine=6,
                   cupsColorSpace=19, cupsNumColors=3, NumCopies=1)
@@ -59,11 +62,11 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         h = parse_header(result.stdout[4:4 + HEADER_LEN])
         rows, end = decode_page(result.stdout, 4 + HEADER_LEN, h)
-        self.assertEqual((h["cupsWidth"], h["cupsHeight"]), (4, 4))
-        self.assertEqual(rows, [b"\xff" * 12,
-                               b"\xff" * 3 + bytes([255, 0, 0, 0, 255, 0]) + b"\xff" * 3,
-                               b"\xff" * 3 + bytes([0, 0, 255, 0, 0, 0]) + b"\xff" * 3,
-                               b"\xff" * 12])
+        self.assertEqual((h["cupsWidth"], h["cupsHeight"]), (1050, 1500))
+        expected = [b"\xff" * 3150] * 1500
+        expected[1] = b"\xff" * 3 + bytes([255, 0, 0, 0, 255, 0]) + b"\xff" * 3141
+        expected[2] = b"\xff" * 3 + bytes([0, 0, 255, 0, 0, 0]) + b"\xff" * 3141
+        self.assertEqual(rows, expected)
         self.assertEqual(end, len(result.stdout))
 
     def test_gray_conversion(self):
@@ -72,7 +75,8 @@ class RasterTests(unittest.TestCase):
         h = parse_header(result.stdout[4:4 + HEADER_LEN])
         rows, _ = decode_page(result.stdout, 4 + HEADER_LEN, h)
         self.assertEqual(h["cupsColorSpace"], 18)
-        self.assertEqual(rows[1:3], [bytes([255, 76, 150, 255]), bytes([255, 27, 0, 255])])
+        self.assertEqual(rows[1:3], [bytes([255, 76, 150]) + b"\xff" * 1047,
+                                    bytes([255, 27, 0]) + b"\xff" * 1047])
 
     def test_rejects_invalid_geometry(self):
         cases = [dict(cupsImagingBBox=[0, 0, 2, float("nan")]),
@@ -80,7 +84,16 @@ class RasterTests(unittest.TestCase):
                  dict(cupsImagingBBox=[1e20, 0, 2e20, 2]),
                  dict(cupsPageSize=[1e8, 4], HWResolution=[1, 72]),
                  dict(cupsPageSize=[float("nan"), 4]),
-                 dict(cupsBytesPerLine=5)]
+                 dict(cupsBytesPerLine=5),
+                 dict(cupsPageSize=[-252, 360]),
+                 dict(cupsPageSize=[0, 360]),
+                 dict(cupsImagingBBox=[-10, 0, 2, 2]),
+                 dict(cupsImagingBBox=[0, 0, 253, 360]),
+                 dict(cupsImagingBBox=[0, 360, 2, 359]),
+                 dict(cupsWidth=1052, cupsBytesPerLine=3156),
+                 dict(cupsHeight=1502),
+                 dict(cupsBytesPerLine=0xffffffff),
+                 dict(cupsImagingBBox=[252, 0, 252.24, 0.24])]
         for case in cases:
             with self.subTest(case=case):
                 result = self.convert(raster(**case))
@@ -88,11 +101,83 @@ class RasterTests(unittest.TestCase):
                 self.assertIn(b"ERROR:", result.stderr)
                 self.assertNotIn(b"runtime error:", result.stderr)
                 self.assertNotIn(b"AddressSanitizer", result.stderr)
+                self.assertNotIn(b"PAGE:", result.stderr)
+                self.assertLessEqual(len(result.stdout), 4)
+
+    def test_rejects_unsupported_device_settings(self):
+        cases = [dict(HWResolution=[1200, 1200]), dict(HWResolution=[300, 600]),
+                 dict(HWResolution=[0, 0]), dict(HWResolution=[1, 1]),
+                 dict(cupsPageSize=[2834.6457, 360]),
+                 dict(cupsPageSize=[252, 1100]), dict(cupsPageSize=[250, 360]),
+                 dict(cupsPageSize=[252, 350]), dict(NumCopies=10)]
+        for case in cases:
+            with self.subTest(case=case):
+                result = self.convert(raster(**case))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(b"ERROR:", result.stderr)
+                self.assertLessEqual(len(result.stdout), 4)
+
+    def test_integer_page_size_fallback(self):
+        result = self.convert(raster(cupsPageSize=[0, 0]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        h = parse_header(result.stdout[4:4 + HEADER_LEN])
+        self.assertEqual((h["cupsWidth"], h["cupsHeight"]), (1050, 1500))
+
+    def test_conflicting_borderless_plain_paper_fails(self):
+        result = self.convert(raster(), "PageSize=A4.Borderless MediaType=Stationery")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"Conflicting print options", result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_closed_output_pipe_fails_without_sigpipe(self):
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            result = subprocess.run([FILTER, "1", "test", "test", "1", ""],
+                                    input=raster(), stdout=write_fd, stderr=subprocess.PIPE,
+                                    env={**os.environ, "PPD": str(ROOT / "ppd/Brother-DCP-T420W.ppd")},
+                                    timeout=10)
+        finally:
+            os.close(write_fd)
+        self.assertNotEqual(result.returncode, -signal.SIGPIPE)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"ERROR:", result.stderr)
+
+    def test_cancel_while_waiting_for_pixels(self):
+        env = {**os.environ, "PPD": str(ROOT / "ppd/Brother-DCP-T420W.ppd")}
+        with subprocess.Popen([FILTER, "1", "test", "test", "1", ""],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, env=env) as process:
+            try:
+                # Hold the input open after the header, as a slow upstream
+                # renderer would. The filter must catch cancellation.
+                process.stdin.write(raster()[:4 + HEADER_LEN])
+                process.stdin.flush()
+                ready, _, _ = select.select([process.stdout], [], [], 5)
+                self.assertTrue(ready, "filter did not start writing the page")
+                os.read(process.stdout.fileno(), 4)
+                process.send_signal(signal.SIGTERM)
+                _, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertIn(b"Job canceled", stderr)
+                self.assertNotIn(b"PAGE:", stderr)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+    def test_pwg_input_round_trip(self):
+        first = self.convert(raster())
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = self.convert(first.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout, second.stdout)
 
     def test_truncated_pixels_fail(self):
         result = self.convert(raster()[:-1])
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(b"Truncated", result.stderr)
+        self.assertNotIn(b"PAGE:", result.stderr)
 
 
 CAPS = b'''<scan:ScannerCapabilities xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03"

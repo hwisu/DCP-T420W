@@ -35,7 +35,8 @@ def three_page_pdf():
 
 
 class PrintPipelineTests(unittest.TestCase):
-    def check_pipeline(self, options, dimensions, space, pages=1, multiple=False):
+    def check_pipeline(self, options, dimensions, space, pages=1, multiple=False,
+                       copies=1, media="iso_a4_210x297mm", render_type=None):
         with tempfile.TemporaryDirectory() as tmp:
             source = ROOT / "test/testpage-a4.pdf"
             if multiple:
@@ -43,21 +44,35 @@ class PrintPipelineTests(unittest.TestCase):
                 source.write_bytes(three_page_pdf())
             raster = Path(tmp) / "input.cups"
             env = {**os.environ, "PPD": str(ROOT / "ppd/Brother-DCP-T420W.ppd")}
-            args = ["1", "test", "test", "1", options]
+            if render_type:
+                env.update(CONTENT_TYPE="application/pdf", FINAL_CONTENT_TYPE=render_type)
+            args = ["1", "test", "test", str(copies), options]
             with raster.open("wb") as output:
                 rendered = subprocess.run(["/usr/libexec/cups/filter/cgpdftoraster", *args, str(source)],
                                           stdout=output, stderr=subprocess.PIPE, env=env, timeout=90)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            if render_type == "image/urf":
+                self.assertEqual(raster.read_bytes()[:8], b"UNIRAST\0")
+                # Treat the generated fixture as a direct AirPrint job.
+                env["CONTENT_TYPE"] = "image/urf"
             converted = subprocess.run([FILTER, *args, str(raster)], capture_output=True,
                                        env=env, timeout=90)
             self.assertEqual(converted.returncode, 0, converted.stderr)
+            accounting = [line for line in converted.stderr.splitlines() if line.startswith(b"PAGE:")]
+            if render_type == "image/pwg-raster":
+                self.assertEqual(accounting, [])
+                self.assertEqual(sum(int(line.split()[2]) for line in rendered.stderr.splitlines()
+                                     if line.startswith(b"PAGE:")), pages)
+            else:
+                self.assertEqual(len(accounting), pages)
             data, offset, count = converted.stdout, 4, 0
             self.assertEqual(data[:4], b"RaS2")
             while offset < len(data):
                 header = parse_header(data[offset:offset + HEADER_LEN])
                 self.assertEqual((header["cupsWidth"], header["cupsHeight"]), dimensions)
                 self.assertEqual(header["cupsColorSpace"], space)
-                self.assertEqual(header["cupsPageSizeName"], "iso_a4_210x297mm")
+                self.assertEqual(header["cupsPageSizeName"], media)
+                self.assertEqual(header["NumCopies"], 1)
                 self.assertEqual(header["ImagingBoundingBox"], [0, 0, 0, 0])
                 rows, offset = decode_page(data, offset + HEADER_LEN, header)
                 self.assertEqual(len(rows), header["cupsHeight"])
@@ -65,6 +80,45 @@ class PrintPipelineTests(unittest.TestCase):
                 count += 1
             self.assertEqual(count, pages)
             self.assertEqual(offset, len(data))
+
+    def test_copies_are_not_multiplied(self):
+        for copies in (1, 10, 11):
+            with self.subTest(copies=copies):
+                self.check_pipeline("cupsPrintQuality=Draft ColorModel=Gray",
+                                    (2480, 3508), 18, pages=copies, copies=copies)
+
+    def test_landscape_keeps_feed_geometry(self):
+        self.check_pipeline("orientation-requested=4 cupsPrintQuality=Draft ColorModel=Gray",
+                            (2480, 3508), 18)
+
+    def test_cups_pwg_path_and_page_accounting(self):
+        for copies in (1, 10, 11):
+            with self.subTest(copies=copies):
+                self.check_pipeline("cupsPrintQuality=Draft ColorModel=Gray",
+                                    (2480, 3507), 18, copies=copies, pages=copies,
+                                    render_type="image/pwg-raster")
+        self.check_pipeline("cupsPrintQuality=Normal ColorModel=RGB",
+                            (4960, 7015), 19, render_type="image/pwg-raster")
+
+    def test_airprint_urf_input(self):
+        self.check_pipeline("cupsPrintQuality=Draft ColorModel=Gray",
+                            (2480, 3507), 18, render_type="image/urf")
+
+    def test_supported_media(self):
+        # Exercise every advertised size through Apple's actual renderer,
+        # including the smallest/largest sheets and all envelope geometries.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("genppd", ROOT / "scripts/genppd.py")
+        genppd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(genppd)
+        for name, media, width, height, _profile, _borderless in genppd.MEDIA:
+            for render_type in (None, "image/pwg-raster"):
+                with self.subTest(media=name, render_type=render_type):
+                    rounding = 0 if render_type else 0.5
+                    dimensions = (int(width / 2540 * 300 + rounding),
+                                  int(height / 2540 * 300 + rounding))
+                    self.check_pipeline(f"PageSize={name} cupsPrintQuality=Draft ColorModel=Gray",
+                                        dimensions, 18, media=media, render_type=render_type)
 
     def test_quality_and_colour(self):
         for options, size, space in [

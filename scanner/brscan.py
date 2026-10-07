@@ -25,7 +25,8 @@ brscan requests them anyway (harmless, and sibling models may honour them),
 then applies whatever the device ignored locally with sips. Use --raw to keep
 exactly what the scanner sent.
 
-Requires only Python 3 and sips, both part of macOS.
+Requires Python 3 and macOS's sips for image conversion. Python 3 must be
+installed separately; the packaged native client does not need it.
 """
 
 import argparse
@@ -146,6 +147,20 @@ def platen_caps(root):
     return p
 
 
+def platen_dimensions(platen):
+    dimensions = []
+    for name, default in (("MaxWidth", 2550), ("MaxHeight", 3507)):
+        element = platen.find(f"scan:{name}", NS)
+        try:
+            value = default if element is None else int(element.text or "")
+        except ValueError as exc:
+            raise ScanError("ScannerCapabilities has invalid platen dimensions.") from exc
+        if not 1 <= value <= 2147483647:
+            raise ScanError("ScannerCapabilities has invalid platen dimensions.")
+        dimensions.append(value)
+    return tuple(dimensions)
+
+
 def describe_caps(root):
     out = [f"Model        {text_of(root, 'pwg:MakeAndModel', '?')}",
            f"eSCL version {text_of(root, 'pwg:Version', '?')}"]
@@ -153,8 +168,7 @@ def describe_caps(root):
     out.append(f"Sources      Platen{' + ADF' if has_adf else ' only (no document feeder)'}")
 
     p = platen_caps(root)
-    w = int(text_of(p, "scan:MaxWidth", "0"))
-    h = int(text_of(p, "scan:MaxHeight", "0"))
+    w, h = platen_dimensions(p)
     out.append(f"Max area     {w/UNITS_PER_INCH*MM_PER_INCH:.0f} x "
                f"{h/UNITS_PER_INCH*MM_PER_INCH:.0f} mm")
     prof = p.find("scan:SettingProfiles/scan:SettingProfile", NS)
@@ -220,6 +234,8 @@ def scanner_state(base):
 def run_scan(base, settings, verbose=False):
     with http("POST", f"{base}/ScanJobs", data=settings,
               content_type="text/xml", timeout=60) as resp:
+        if resp.status not in (200, 201):
+            raise ScanError(f"Scanner refused the job (HTTP {resp.status}).")
         job = resp.headers.get("Location")
     if not job:
         raise ScanError("Scanner accepted the job but returned no Location header.")
@@ -379,6 +395,13 @@ def parse_crop(spec):
     return w, h
 
 
+def page_name(base, index):
+    if index == 0:
+        return base
+    stem, extension = os.path.splitext(base)
+    return f"{stem}-{index + 1}{extension}"
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="brscan", description=__doc__.split("IMPORTANT")[0].strip(),
@@ -451,10 +474,7 @@ def main():
             return 0
 
         plat = platen_caps(caps)
-        max_w = int(text_of(plat, "scan:MaxWidth", "2550"))
-        max_h = int(text_of(plat, "scan:MaxHeight", "3507"))
-        if max_w <= 0 or max_h <= 0:
-            raise ScanError("ScannerCapabilities has invalid platen dimensions.")
+        max_w, max_h = platen_dimensions(plat)
         version = text_of(caps, "pwg:Version", "2.63")
 
         fmt = args.format
@@ -485,7 +505,7 @@ def main():
 
         written = []
         for idx, (data, ctype) in enumerate(pages):
-            target = out if idx == 0 else re.sub(r"(\.[^.]+)$", f"-{idx+1}\\1", out)
+            target = page_name(out, idx)
 
             if args.raw:
                 with open(target, "wb") as fh:
@@ -544,7 +564,7 @@ def main():
             print(f"Wrote {path} ({os.path.getsize(path)/1024:.0f} KB)")
         return 0
 
-    except ScanError as exc:
+    except (ScanError, OSError, HTTPException, ET.ParseError) as exc:
         print(f"brscan: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

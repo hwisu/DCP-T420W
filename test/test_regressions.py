@@ -189,7 +189,8 @@ STATUS = b'<ScannerStatus xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm"><pwg
 
 
 @contextlib.contextmanager
-def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS):
+def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS,
+                   caps_status=200, create_status=201):
     requests = []
     replies = iter(pages)
     disconnected = False
@@ -210,7 +211,7 @@ def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS):
             nonlocal disconnected
             requests.append(("GET", self.path))
             if self.path.endswith("ScannerCapabilities"):
-                self.reply(200, caps)
+                self.reply(caps_status, caps)
             elif self.path.endswith("ScannerStatus"):
                 self.reply(200, STATUS)
             elif self.path.endswith("NextDocument"):
@@ -227,7 +228,7 @@ def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS):
         def do_POST(self):
             requests.append(("POST", self.path))
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            self.reply(201, headers={"Location": location})
+            self.reply(create_status, headers={"Location": location})
 
         def do_DELETE(self):
             requests.append(("DELETE", self.path))
@@ -292,12 +293,53 @@ class ScannerTests(unittest.TestCase):
                         self.assertIn(("DELETE", "/eSCL/ScanJobs/job"), requests)
 
     def test_invalid_platen_fails_before_scanning(self):
+        cases = [CAPS.replace(b">2550<", b">" + value + b"<")
+                 for value in (b"0", b"-1", b"oops", b"", b"2147483648")]
+        cases += [CAPS.replace(b"PlatenInputCaps", b"AdfInputCaps"), b"not xml"]
+        for client in CLIENTS:
+            for caps in cases:
+                for args in ([], ["--caps"]):
+                    with self.subTest(client=client, caps=caps, args=args), tempfile.TemporaryDirectory() as tmp:
+                        with scanner_server([], caps=caps) as (port, requests):
+                            output = Path(tmp) / "scan.png"
+                            result = self.run_client(client, port, output, *args)
+                            self.assertEqual(result.returncode, 1, result.stderr)
+                            self.assertNotIn("Traceback", result.stderr)
+                            self.assertFalse(output.exists())
+                            self.assertFalse(any(method == "POST" for method, _ in requests))
+
+    def test_capabilities_http_error_fails_before_scanning(self):
         for client in CLIENTS:
             with self.subTest(client=client), tempfile.TemporaryDirectory() as tmp:
-                with scanner_server([], caps=CAPS.replace(b">2550<", b">0<")) as (port, requests):
-                    result = self.run_client(client, port, Path(tmp) / "scan.png", "--crop", "a6")
+                with scanner_server([], caps_status=500) as (port, requests):
+                    result = self.run_client(client, port, Path(tmp) / "scan.raw", "--raw")
                     self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("HTTP 500", result.stderr)
                     self.assertFalse(any(method == "POST" for method, _ in requests))
+
+    def test_unexpected_job_status_fails_before_downloading(self):
+        for client in CLIENTS:
+            with self.subTest(client=client), tempfile.TemporaryDirectory() as tmp:
+                with scanner_server([(200, b"page")], create_status=202) as (port, requests):
+                    output = Path(tmp) / "scan.raw"
+                    result = self.run_client(client, port, output, "--raw")
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("HTTP 202", result.stderr)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(any("NextDocument" in path for _, path in requests))
+
+    def test_multiple_pages_keep_distinct_output_names(self):
+        for client in CLIENTS:
+            for name, second_name in [("scan", "scan-2"), ("scan.raw", "scan-2.raw"),
+                                      (".scan", ".scan-2")]:
+                with self.subTest(client=client, name=name), tempfile.TemporaryDirectory(suffix=".scans") as tmp:
+                    with scanner_server([(200, b"page 1"), (200, b"page 2")]) as (port, requests):
+                        output = Path(tmp) / name
+                        result = self.run_client(client, port, output, "--raw")
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output.read_bytes(), b"page 1")
+                        self.assertEqual((Path(tmp) / second_name).read_bytes(), b"page 2")
+                        self.assertIn(("DELETE", "/eSCL/ScanJobs/job"), requests)
 
     def test_native_image_processing(self):
         with tempfile.TemporaryDirectory() as tmp:

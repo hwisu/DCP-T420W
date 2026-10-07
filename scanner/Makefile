@@ -4,22 +4,28 @@
 # resulting binary has no runtime dependencies: Bonjour, URLSession and
 # ImageIO all come from the system.
 
-SWIFTC  ?= swiftc
+SDK     ?= $(shell xcrun --sdk macosx --show-sdk-path)
+SWIFTC  ?= xcrun --sdk macosx swiftc
 SWIFTFLAGS ?= -O -swift-version 6
 TARGET  := brscan
-MIN_OS  := 11
+MIN_OS  ?= 11.0
+NATIVE_ARCH ?= $(shell uname -m)
+MODULE_CACHE ?= $(abspath ../build/swift-module-cache)
+BUILD_FLAGS = -sdk "$(SDK)" -module-cache-path "$(MODULE_CACHE)"
+
+.DELETE_ON_ERROR:
 
 all: $(TARGET)
 
-$(TARGET): brscan.swift
-	$(SWIFTC) $(SWIFTFLAGS) -target arm64-apple-macos$(MIN_OS)  $< -o $@-arm64
-	$(SWIFTC) $(SWIFTFLAGS) -target x86_64-apple-macos$(MIN_OS) $< -o $@-x86_64
-	lipo -create -output $@ $@-arm64 $@-x86_64
+$(TARGET): brscan.swift Makefile
+	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target arm64-apple-macos$(MIN_OS)  $< -o $@-arm64
+	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target x86_64-apple-macos$(MIN_OS) $< -o $@-x86_64
+	xcrun lipo -create -output $@ $@-arm64 $@-x86_64
 	rm -f $@-arm64 $@-x86_64
 
 # Single-architecture build for the machine you are on.
 native: brscan.swift
-	$(SWIFTC) $(SWIFTFLAGS) brscan.swift -o $(TARGET)
+	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target $(NATIVE_ARCH)-apple-macos$(MIN_OS) $< -o $(TARGET)
 
 install: $(TARGET)
 	install -d /usr/local/bin

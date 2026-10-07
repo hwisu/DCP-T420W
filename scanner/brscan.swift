@@ -200,15 +200,22 @@ func parseCaps(_ data: Data) throws -> PlatenCaps {
     func platen(_ name: String) -> [String] {
         values(in: doc, name, under: "PlatenInputCaps")
     }
+    guard !values(in: doc, "PlatenInputCaps", under: "Platen").isEmpty else {
+        throw ScanError("Scanner reports no platen; brscan only drives the flatbed.")
+    }
+    func dimension(_ name: String, default fallback: Int) throws -> Int {
+        guard let text = platen(name).first else { return fallback }
+        guard let value = Int(text), (1...Int(Int32.max)).contains(value) else {
+            throw ScanError("ScannerCapabilities has invalid platen dimensions.")
+        }
+        return value
+    }
 
     var c = PlatenCaps()
     c.makeAndModel = first("MakeAndModel") ?? c.makeAndModel
     c.version = first("Version") ?? c.version
-    if let n = platen("MaxWidth").first.flatMap({ Int($0) }) { c.maxWidth = n }
-    if let n = platen("MaxHeight").first.flatMap({ Int($0) }) { c.maxHeight = n }
-    guard c.maxWidth > 0, c.maxHeight > 0 else {
-        throw ScanError("ScannerCapabilities has invalid platen dimensions.")
-    }
+    c.maxWidth = try dimension("MaxWidth", default: c.maxWidth)
+    c.maxHeight = try dimension("MaxHeight", default: c.maxHeight)
     c.colorModes = platen("ColorMode")
     c.formats = Array(Set(platen("DocumentFormat"))).sorted()
     c.resolutions = platen("XResolution")
@@ -430,6 +437,7 @@ func inferredFormat(of path: String) -> OutputFormat? {
 func pageName(_ base: String, index: Int) -> String {
     guard index > 0 else { return base }
     let ns = base as NSString
+    guard !ns.pathExtension.isEmpty else { return "\(base)-\(index + 1)" }
     return "\(ns.deletingPathExtension)-\(index + 1).\(ns.pathExtension)"
 }
 
@@ -566,8 +574,11 @@ func main() -> Int32 {
 
         if wantStatus { print(scannerState(base: base)); return 0 }
 
-        let caps = try parseCaps(http("GET", base.appendingPathComponent("ScannerCapabilities"),
-                                      timeout: 20).data)
+        let reply = try http("GET", base.appendingPathComponent("ScannerCapabilities"), timeout: 20)
+        guard reply.status == 200 else {
+            throw ScanError("ScannerCapabilities returned HTTP \(reply.status).")
+        }
+        let caps = try parseCaps(reply.data)
         if wantCaps { print(describe(caps)); return 0 }
 
         let outFormat = format ?? outPath.flatMap(inferredFormat(of:)) ?? .pdf

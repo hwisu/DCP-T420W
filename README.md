@@ -82,7 +82,22 @@ To build the package yourself:
 
 ### From source instead
 
+Build requirements are Xcode (or Command Line Tools) with a Swift 6 compiler,
+the macOS SDK, and Python 3 for the PPD generator and tests. Python is not a
+runtime dependency of the packaged driver, and there are no third-party
+packages or package-manager dependencies to update. CUPS, Bonjour, ImageIO,
+and the other runtime frameworks are supplied and updated by macOS.
+
+The builds select the macOS SDK and compiler through `xcrun`; see
+[Swift's macOS toolchain guidance](https://www.swift.org/install/macos/).
+Both universal and native builds target macOS 11.0. `SDK`, `MIN_OS`, `CC`,
+`SWIFTC`, and compiler/linker flags can be overridden with `make` variables.
+Swift's module cache defaults to `build/swift-module-cache` so builds do not
+need to write to the user's global cache; override `MODULE_CACHE` if needed.
+Use `make -B` after switching SDKs, compiler versions, or build flags.
+
 ```sh
+make                                          # all three universal binaries
 sudo ./install.sh                              # printing
 sudo make -C scanner install                   # brscan -> /usr/local/bin
 ```
@@ -382,6 +397,9 @@ Invalid options are rejected before discovery or scanning. Crop dimensions
 must be positive and finite, rotation must be 0/90/180/270, and the lineart
 threshold must be 1–254. A failed page transfer reports an error and releases
 the scanner job; it does not report a partially downloaded scan as successful.
+Malformed capabilities, invalid platen dimensions, and failed capabilities
+requests are rejected before creating a scan job. Multiple returned pages use
+distinct names (`scan`, `scan-2`, or `scan.png`, `scan-2.png`) in both clients.
 
 ## Layout
 
@@ -390,7 +408,7 @@ filter/rastertobrother.c   the print filter (C, links libcups)
 filter/Makefile            builds a universal (arm64 + x86_64) binary
 ppd/Brother-DCP-T420W.ppd  generated — edit the generator, not this
 scanner/brscan.swift       eSCL scan client, native and dependency-free
-scanner/brscan.py          the same tool in Python, for non-macOS use
+scanner/brscan.py          Python alternative (image conversion uses macOS sips)
 scanner/Makefile           builds brscan universal
 airprint/brairprint.c      publishes the queue as AirPrint, for iOS clients
 airprint/Makefile          builds brairprint universal
@@ -409,13 +427,17 @@ PITFALLS.md                everything that bites, printing and scanning
 
 ## Verification
 
-Run the offline regression suite after building the binaries:
+Build all binaries and run the offline regressions, PPD validation, and shell
+syntax checks together:
 
 ```sh
-make -C filter
-make -C scanner
-python3 -m unittest discover -s test -v
+make check
 ```
+
+`PYTHON=/path/to/python3 make check` selects a different Python interpreter.
+The build has been checked with Apple Swift 6.4, Apple Clang 21, and Python
+3.14.6; the minimum macOS 11 deployment target is retained. Building with that
+target does not substitute for runtime testing on macOS 11.
 
 It checks raster padding, colour conversion and malformed geometry, plus
 scanner option validation, job URLs, error cleanup and image processing using

@@ -16,3 +16,5 @@ scan-*.png
 # Installer build output
 build/
 scanner/brscan
+scanner/brscan-arm64
+scanner/brscan-x86_64

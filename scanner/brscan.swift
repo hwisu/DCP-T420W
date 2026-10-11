@@ -23,6 +23,44 @@ struct ScanError: Error, CustomStringConvertible {
     init(_ message: String) { description = message }
 }
 
+struct ScanInterrupted: Error {
+    let signal: Int32
+}
+
+/// Handle signals on a dispatch queue, never run Foundation or HTTP in a
+/// POSIX signal handler. The synchronous HTTP wait checks this flag so normal
+/// stack unwinding can release the eSCL job before the process exits.
+private final class Cancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var received: Int32?
+    private var sources: [DispatchSourceSignal] = []
+
+    init() {
+        let queue = DispatchQueue(label: "brscan.signals")
+        for number in [SIGINT, SIGTERM] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                if self.received == nil { self.received = number }
+                self.lock.unlock()
+            }
+            source.resume()
+            sources.append(source)
+        }
+    }
+
+    func check() throws {
+        lock.lock()
+        let number = received
+        lock.unlock()
+        if let number { throw ScanInterrupted(signal: number) }
+    }
+}
+
+private let cancellation = Cancellation()
+
 // MARK: - Constants
 
 let unitsPerInch = 300.0        // eSCL regions are three-hundredths of an inch
@@ -59,13 +97,16 @@ final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
     private var results: [Found] = []
     private var done = false
 
-    func run(timeout: TimeInterval) -> [Found] {
+    func run(timeout: TimeInterval) throws -> [Found] {
         browser.delegate = self
         browser.searchForServices(ofType: "_uscan._tcp.", inDomain: "local.")
+        defer { browser.stop() }
         let deadline = Date().addingTimeInterval(timeout)
         while !done, Date() < deadline,
-              RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2)) {}
-        browser.stop()
+              RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2)) {
+            try cancellation.check()
+        }
+        try cancellation.check()
         return results
     }
 
@@ -130,7 +171,9 @@ private final class Completion: @unchecked Sendable {
 
 @discardableResult
 func http(_ method: String, _ url: URL, body: Data? = nil,
-          contentType: String? = nil, timeout: TimeInterval = 300) throws -> HTTPReply {
+          contentType: String? = nil, timeout: TimeInterval = 300,
+          interruptible: Bool = true) throws -> HTTPReply {
+    if interruptible { try cancellation.check() }
     var req = URLRequest(url: url, timeoutInterval: timeout)
     req.httpMethod = method
     req.httpBody = body
@@ -152,9 +195,17 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
     }
     task.resume()
 
-    if sem.wait(timeout: .now() + timeout + 5) == .timedOut {
-        task.cancel()
-        throw ScanError("\(method) \(url.path) timed out")
+    let deadline = DispatchTime.now() + timeout + 5
+    while sem.wait(timeout: .now() + .milliseconds(100)) == .timedOut {
+        do {
+            if interruptible { try cancellation.check() }
+            if DispatchTime.now() >= deadline {
+                throw ScanError("\(method) \(url.path) timed out")
+            }
+        } catch {
+            task.cancel()
+            throw error
+        }
     }
     switch completion.result {
     case .success(let reply)?:
@@ -286,7 +337,8 @@ func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
     comps.percentEncodedQuery = target.percentEncodedQuery
     guard let job = comps.url else { throw ScanError("Bad job URL: \(location)") }
     if verbose { err("  job \(job)") }
-    defer { _ = try? http("DELETE", job, timeout: 15) } // also release failed jobs
+    // Cancellation must not suppress the cleanup request itself.
+    defer { _ = try? http("DELETE", job, timeout: 15, interruptible: false) }
 
     let next = job.appendingPathComponent("NextDocument")
     var pages: [Data] = []
@@ -369,9 +421,13 @@ func toGray(_ img: CGImage, threshold: Int?) throws -> CGImage {
     return out
 }
 
-func write(_ img: CGImage, to url: URL, format: OutputFormat) throws {
+func write(_ img: CGImage, to url: URL, format: OutputFormat,
+           widthMM: Double, heightMM: Double) throws {
     if format == .pdf {
-        var box = CGRect(x: 0, y: 0, width: CGFloat(img.width), height: CGFloat(img.height))
+        // PDF coordinates are points (1/72 inch), not scanner pixels. The
+        // platen supplies the physical size even when the firmware ignores DPI.
+        var box = CGRect(x: 0, y: 0, width: widthMM / mmPerInch * 72,
+                         height: heightMM / mmPerInch * 72)
         guard let consumer = CGDataConsumer(url: url as CFURL),
               let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else {
             throw ScanError("Could not create \(url.lastPathComponent).")
@@ -483,6 +539,8 @@ The DCP-T420W firmware ignores eSCL scan settings, so --mode, --crop,
 """
 
 func main() -> Int32 {
+    // Install signal sources before discovery or creating a scanner job.
+    _ = cancellation
     var args = Array(CommandLine.arguments.dropFirst())
     var host: String?, outPath: String?, cropSize: (Double, Double)?
     var port = 80, path = "eSCL", dpi = 300, rotate = 0, threshold = 128
@@ -549,7 +607,7 @@ func main() -> Int32 {
 
     do {
         if wantList {
-            let found = Discovery().run(timeout: 6)
+            let found = try Discovery().run(timeout: 6)
             if found.isEmpty { print("No eSCL scanners found."); return 1 }
             for f in found { print("\(f.name)\n  http://\(f.host):\(f.port)/\(f.rs)") }
             return 0
@@ -557,7 +615,7 @@ func main() -> Int32 {
 
         var h = host, p = port, rs = path
         if h == nil {
-            let found = Discovery().run(timeout: 6)
+            let found = try Discovery().run(timeout: 6)
             guard let first = found.first else {
                 throw ScanError("No eSCL scanner found. Pass --host.")
             }
@@ -572,7 +630,12 @@ func main() -> Int32 {
         comps.path = "/" + rs.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let base = comps.url else { throw ScanError("Bad scanner address.") }
 
-        if wantStatus { print(scannerState(base: base)); return 0 }
+        if wantStatus {
+            let state = scannerState(base: base)
+            try cancellation.check()
+            print(state)
+            return 0
+        }
 
         let reply = try http("GET", base.appendingPathComponent("ScannerCapabilities"), timeout: 20)
         guard reply.status == 200 else {
@@ -609,6 +672,7 @@ func main() -> Int32 {
         let platenW = platenMM(caps.maxWidth), platenH = platenMM(caps.maxHeight)
 
         for (i, data) in pages.enumerated() {
+            try cancellation.check()
             let name = pageName(base0, index: i)
             let url = URL(fileURLWithPath: name)
 
@@ -618,18 +682,25 @@ func main() -> Int32 {
                 try data.write(to: url)      // already a PDF, pass it through
             } else {
                 var img = try loadImage(data)
+                var widthMM = platenW, heightMM = platenH
                 if let size = cropSize {
+                    let originalWidth = img.width, originalHeight = img.height
                     img = cropped(img, widthMM: size.0, heightMM: size.1,
                                   platenWmm: platenW, platenHmm: platenH)
+                    widthMM *= Double(img.width) / Double(originalWidth)
+                    heightMM *= Double(img.height) / Double(originalHeight)
                     if verbose { err("  cropped to \(img.width)x\(img.height)px") }
                 }
                 if rotate != 0 { img = try rotated(img, degreesClockwise: rotate) }
+                if rotate == 90 || rotate == 270 { swap(&widthMM, &heightMM) }
                 switch mode {
                 case .color: break
                 case .gray: img = try toGray(img, threshold: nil)
                 case .lineart: img = try toGray(img, threshold: threshold)
                 }
-                try write(img, to: url, format: outFormat)
+                try cancellation.check()
+                try write(img, to: url, format: outFormat,
+                          widthMM: widthMM, heightMM: heightMM)
             }
 
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]
@@ -638,6 +709,9 @@ func main() -> Int32 {
         }
         return 0
 
+    } catch let e as ScanInterrupted {
+        err("brscan: interrupted")
+        return 128 + e.signal
     } catch let e as ScanError {
         err("brscan: \(e.description)")
         return 1

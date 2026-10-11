@@ -527,6 +527,9 @@ def main():
                 work = os.path.join(tmp, "work.png")
                 sips("-s", "format", "png", src, "--out", work)
 
+                width_mm = max_w / UNITS_PER_INCH * MM_PER_INCH
+                height_mm = max_h / UNITS_PER_INCH * MM_PER_INCH
+
                 if crop:
                     cw_mm, ch_mm = crop
                     fw, fh_px = image_size(work)
@@ -539,6 +542,8 @@ def main():
                     ch = max(1, round(min(1, ch_mm / plat_h_mm) * fh_px))
                     # sips crops centred, so offset back to the top-left origin.
                     sips("-c", ch, cw, "--cropOffset", 0, 0, work, "--out", work)
+                    width_mm *= cw / fw
+                    height_mm *= ch / fh_px
                     if args.verbose:
                         print(f"  cropped to {cw}x{ch}px "
                               f"({cw_mm}x{ch_mm}mm of {plat_w_mm:.0f}x{plat_h_mm:.0f})",
@@ -546,6 +551,8 @@ def main():
 
                 if args.rotate:
                     sips("-r", args.rotate, work, "--out", work)
+                if args.rotate in (90, 270):
+                    width_mm, height_mm = height_mm, width_mm
 
                 if args.mode == "gray":
                     to_gray(work)
@@ -555,6 +562,14 @@ def main():
                 if fmt == "png":
                     shutil.copyfile(work, target)
                 else:
+                    if fmt == "pdf":
+                        # sips uses image density for the PDF media box. Set
+                        # each axis after processing; the scanner's nominal
+                        # DPI is inaccurate and png_write drops metadata.
+                        width, height = image_size(work)
+                        sips("-s", "dpiWidth", width / width_mm * MM_PER_INCH,
+                             "-s", "dpiHeight", height / height_mm * MM_PER_INCH,
+                             work, "--out", work)
                     sips("-s", "format", "pdf" if fmt == "pdf" else "jpeg",
                          work, "--out", target)
 

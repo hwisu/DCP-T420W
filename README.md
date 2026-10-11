@@ -68,7 +68,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.3.3.pkg -target /
+sudo installer -pkg DCP-T420W-1.3.4.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -181,7 +181,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.3.3.pkg \
+sudo installer -pkg DCP-T420W-1.3.4.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -391,6 +391,12 @@ Scans come back 1680 × 2195 px covering the whole platen. The pixels are not
 square — roughly 198 dpi across and 188 dpi down — so `--crop` scales each
 axis separately. See [PITFALLS.md §2.3](PITFALLS.md).
 
+PDFs generated from these images use the physical dimensions inferred from
+the reported platen size, with cropping rounded to source pixels and width
+and height swapped for 90°/270° rotation. Both clients preserve these dimensions
+even after grayscale or lineart conversion. The requested `--dpi` does not
+determine PDF page size, since this firmware ignores it.
+
 There is no document feeder: flatbed only, one page per scan, no duplex.
 
 Invalid options are rejected before discovery or scanning. Crop dimensions
@@ -400,6 +406,10 @@ the scanner job; it does not report a partially downloaded scan as successful.
 Malformed capabilities, invalid platen dimensions, and failed capabilities
 requests are rejected before creating a scan job. Multiple returned pages use
 distinct names (`scan`, `scan-2`, or `scan.png`, `scan-2.png`) in both clients.
+The native client also handles Ctrl+C and SIGTERM during page transfers:
+it cancels the pending request, attempts to release the scanner job, and exits
+with status 130 or 143. Job deletion remains best-effort if the device is
+unreachable or rejects cleanup.
 
 ## Layout
 
@@ -440,7 +450,8 @@ The build has been checked with Apple Swift 6.4, Apple Clang 21, and Python
 target does not substitute for runtime testing on macOS 11.
 
 It checks raster padding, colour conversion and malformed geometry, plus
-scanner option validation, job URLs, error cleanup and image processing using
+scanner option validation, job URLs, error cleanup, cancellation, PDF dimensions
+and image processing using
 a loopback eSCL server. It never discovers or operates a physical printer.
 The macOS PDF pipeline tests also verify quality, borderless paper, and odd/even
 page selection through `cgpdftoraster`.
@@ -456,6 +467,9 @@ padding, and conflicting PPD options such as borderless plain paper. Copies
 must already be expanded by the renderer, as requested by `cupsManualCopies`;
 the filter rejects a second per-page copy multiplier. Cancellation and closed
 output pipes stop conversion, and incomplete pages are not counted as finished.
+An incomplete or invalid subsequent page header fails the job even if earlier
+pages were converted successfully. Normal EOF between pages remains valid for
+CUPS, PWG and AirPrint URF input.
 
 Regression tests cover every advertised paper size, landscape rendering,
 1/10/11-copy jobs, Apple's PWG/URF output, malformed input, cancellation, and

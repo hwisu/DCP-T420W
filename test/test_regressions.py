@@ -10,6 +10,7 @@ import contextlib
 import http.server
 import os
 from pathlib import Path
+import re
 import select
 import socket
 import signal
@@ -49,6 +50,26 @@ def raster(**overrides):
     assert len(header) == HEADER_LEN
     # Uncompressed, big-endian CUPS v3, with red/green then blue/black pixels.
     return b"RaS3" + header + bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0])
+
+
+def urf():
+    # A blank 3.5x5 inch W8 page: row repetition plus clear-to-end packets.
+    header = bytearray(32)
+    header[0] = 8
+    header[12:24] = struct.pack(">III", 1050, 1500, 300)
+    return b"UNIRAST\0" + bytes(4) + header + b"\xff\x80" * 5 + b"\xdb\x80"
+
+
+def pdf_page_size(path):
+    # Quartz emits ordinary page objects. Resolve inherited page boxes as
+    # well as explicit ones without adding a third-party PDF dependency.
+    objects = dict(re.findall(rb"(\d+)\s+0\s+obj\b(.*?)endobj", path.read_bytes(), re.S))
+    page, = [obj for obj in objects.values() if re.search(rb"/Type\s*/Page\b", obj)]
+    while (box := re.search(rb"/MediaBox\s*\[([^]]+)\]", page)) is None:
+        parent = re.search(rb"/Parent\s+(\d+)\s+0\s+R", page)
+        page = objects[parent[1]]
+    x0, y0, x1, y1 = map(float, box[1].split())
+    return x1 - x0, y1 - y0
 
 
 class RasterTests(unittest.TestCase):
@@ -179,6 +200,60 @@ class RasterTests(unittest.TestCase):
         self.assertIn(b"Truncated", result.stderr)
         self.assertNotIn(b"PAGE:", result.stderr)
 
+    def test_page_boundaries_and_truncated_headers(self):
+        cups = raster()
+        compressed = (b"RaS2" + cups[4:4 + HEADER_LEN]
+                      + b"\0\xff" + cups[-12:-6] + b"\0\xff" + cups[-6:])
+        pwg = self.convert(cups)
+        self.assertEqual(pwg.returncode, 0, pwg.stderr)
+        # Small compressed pages deliberately fit in a single read buffer,
+        # exposing any accidental prefetch of the following partial header.
+        for name, data, prefix, header_len in [
+            ("CUPS", cups, 4, HEADER_LEN),
+            ("compressed CUPS", compressed, 4, HEADER_LEN),
+            ("PWG", pwg.stdout, 4, HEADER_LEN),
+            ("URF", urf(), 12, 32),
+        ]:
+            for pages in (1, 2):
+                with self.subTest(format=name, pages=pages):
+                    result = self.convert(data + data[prefix:] * (pages - 1))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr.count(b"PAGE:"), pages)
+            for cut in (1, header_len // 2, header_len - 1, header_len):
+                for complete_pages in (0, 1):
+                    with self.subTest(format=name, cut=cut, complete_pages=complete_pages):
+                        # The full-length case is an invalid all-zero header.
+                        partial = data[prefix:prefix + cut] if cut < header_len else bytes(cut)
+                        result = self.convert((data if complete_pages else data[:prefix]) + partial)
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn(b"ERROR:", result.stderr)
+                        if cut < header_len:
+                            self.assertIn(b"raster page header", result.stderr)
+                        self.assertEqual(result.stderr.count(b"PAGE:"), complete_pages)
+
+    def test_compressed_packets_and_truncation(self):
+        # Mix literal/repeated pixels, repeated rows and the white-fill code.
+        # Compare the pixels with uncompressed input, including packet payloads
+        # crossing the reader's block boundary.
+        width, height = 128, 200
+        row = bytes(range(256)) + bytes(range(128))
+        raw = raster(cupsWidth=width, cupsHeight=height, cupsBytesPerLine=len(row),
+                     cupsImagingBBox=[0, 0, 0, 0])[:4 + HEADER_LEN]
+        raw += row * (height - 1) + bytes([255]) * len(row)
+        packed = b"RaS2" + raw[4:4 + HEADER_LEN]
+        packed += (b"\0\x81" + row) * (height - 1) + b"\0\x80"
+        expected = self.convert(raw)
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        result = self.convert(packed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, expected.stdout)
+        for cut in (1, 20, 385):
+            with self.subTest(cut=cut):
+                result = self.convert(packed[:-cut])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(b"Truncated", result.stderr)
+                self.assertNotIn(b"PAGE:", result.stderr)
+
 
 CAPS = b'''<scan:ScannerCapabilities xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03"
  xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm"><pwg:Version>2.63</pwg:Version>
@@ -205,7 +280,10 @@ def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS,
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Cancellation can close a deliberately stalled transfer.
 
         def do_GET(self):
             nonlocal disconnected
@@ -216,6 +294,8 @@ def scanner_server(pages, location="/eSCL/ScanJobs/job", caps=CAPS,
                 self.reply(200, STATUS)
             elif self.path.endswith("NextDocument"):
                 response = None if disconnected else next(replies, (404, b""))
+                if callable(response):
+                    response = response()
                 if response is None:
                     disconnected = True
                     self.connection.shutdown(socket.SHUT_RDWR)
@@ -351,6 +431,59 @@ class ScannerTests(unittest.TestCase):
                                              "--mode", "gray", "--crop", crop)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(struct.unpack(">II", output.read_bytes()[16:24]), expected)
+
+    def test_pdf_physical_dimensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output = Path(tmp) / "source.png", Path(tmp) / "scan.pdf"
+            # The real device's fixed frame has different density on each axis.
+            write_png(source, [bytes([64, 128, 192]) * 1680] * 2195, 1680, 2195, 3)
+            cases = [([], (215.9, 296.926)),
+                     (["--dpi", "600"], (215.9, 296.926)),
+                     (["--crop", "a6"], (105, 148)),
+                     (["--crop", "a6", "--rotate", "90", "--mode", "gray"], (148, 105)),
+                     (["--rotate", "270", "--mode", "lineart"], (296.926, 215.9)),
+                     (["--crop", "999x999", "--rotate", "180"], (215.9, 296.926))]
+            for client in CLIENTS:
+                for args, dimensions_mm in cases:
+                    with self.subTest(client=client, args=args):
+                        with scanner_server([(200, source.read_bytes())]) as (port, _):
+                            result = self.run_client(client, port, output, *args)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        for actual, expected in zip(pdf_page_size(output), dimensions_mm):
+                            # Cropping rounds to a physical source pixel.
+                            self.assertAlmostEqual(actual * 25.4 / 72, expected, delta=0.15)
+
+    def test_native_cancellation_releases_job(self):
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for first_page in (False, True):
+                with self.subTest(signal=signum, first_page=first_page), tempfile.TemporaryDirectory() as tmp:
+                    started, release = threading.Event(), threading.Event()
+
+                    def stalled_page():
+                        started.set()
+                        release.wait(10)
+                        return 200, b"late page"
+
+                    pages = ([(200, b"first page")] if first_page else []) + [stalled_page]
+                    with scanner_server(pages) as (port, requests):
+                        output = Path(tmp) / "scan.raw"
+                        with subprocess.Popen([SCANNER, "--host", "127.0.0.1", "--port", str(port),
+                                               "--raw", "--out", str(output)],
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+                            try:
+                                self.assertTrue(started.wait(5), "scan transfer did not start")
+                                process.send_signal(signum)
+                                stdout, stderr = process.communicate(timeout=5)
+                                self.assertEqual(process.returncode, 128 + signum, stderr)
+                                self.assertIn(b"interrupted", stderr)
+                                self.assertNotIn(b"Wrote", stdout)
+                                self.assertFalse(output.exists())
+                                self.assertEqual(requests.count(("DELETE", "/eSCL/ScanJobs/job")), 1)
+                            finally:
+                                release.set()
+                                if process.poll() is None:
+                                    process.kill()
+                                    process.communicate()
 
 
 if __name__ == "__main__":

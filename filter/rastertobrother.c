@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
 
 /*
  * Cancellation flag, set from SIGTERM by the scheduler.
@@ -45,6 +46,120 @@ cancel_job(int sig)
 {
   (void)sig;
   job_canceled = 1;
+}
+
+/*
+ * libcups returns 0 for both EOF and a short/invalid page header, and can
+ * prefetch the next header while decoding compressed pixels. Keep read-ahead
+ * here instead, so bytes handed to libcups identify the actual page boundary.
+ * Frame compressed packets without decoding their pixels; this keeps reads
+ * in blocks while preventing libcups from buffering the next page's header.
+ */
+typedef struct
+{
+  int fd, failed, compressed;
+  size_t header_left, offset, available;
+  uint64_t delivered;
+  unsigned rows_left, row_bytes, row_left, repeat, bpp, packet_left;
+  unsigned char sync[4];
+  unsigned char buffer[65536];
+} raster_input_t;
+
+static size_t
+frame_pixels(raster_input_t *input, const unsigned char *data, size_t length)
+{
+  size_t used = 0;
+
+  while (used < length && input->rows_left)
+  {
+    if (input->packet_left)
+    {
+      size_t count = input->packet_left;
+      if (count > length - used)
+        count = length - used;
+      used += count;
+      input->packet_left -= (unsigned)count;
+    }
+    else if (!input->repeat)
+    {
+      input->repeat = (unsigned)data[used ++] + 1;
+      if (input->repeat > input->rows_left)
+        input->repeat = input->rows_left;
+      input->row_left = input->row_bytes;
+    }
+    else
+    {
+      unsigned control = data[used ++];
+      unsigned pixels = control < 128 ? control + 1 : 257 - control;
+      unsigned decoded = pixels * input->bpp;
+
+      if (control == 128) /* White fill to the end of this row. */
+        input->row_left = 0;
+      else
+      {
+        if (decoded > input->row_left)
+          decoded = input->row_left;
+        input->packet_left = control < 128 ? input->bpp : decoded;
+        input->row_left -= decoded;
+      }
+    }
+
+    if (input->repeat && !input->row_left && !input->packet_left)
+    {
+      input->rows_left -= input->repeat;
+      input->repeat = 0;
+    }
+  }
+
+  return (used);
+}
+
+static ssize_t
+read_raster(void *context, unsigned char *buffer, size_t length)
+{
+  raster_input_t *input = context;
+  ssize_t count;
+
+  if (job_canceled)
+    return (-1);
+
+  if (input->header_left)
+  {
+    if (length > input->header_left)
+      length = input->header_left;
+  }
+
+  if (input->offset == input->available)
+  {
+    do
+      count = read(input->fd, input->buffer, sizeof(input->buffer));
+    while (count < 0 && errno == EINTR && !job_canceled);
+
+    if (count < 0)
+      input->failed = 1;
+    if (count <= 0)
+      return (count);
+    input->offset = 0;
+    input->available = (size_t)count;
+  }
+
+  if (length > input->available - input->offset)
+    length = input->available - input->offset;
+  if (input->compressed && !input->header_left)
+    length = frame_pixels(input, input->buffer + input->offset, length);
+  memcpy(buffer, input->buffer + input->offset, length);
+  if (input->delivered < sizeof(input->sync))
+  {
+    size_t sync_bytes = sizeof(input->sync) - (size_t)input->delivered;
+    if (sync_bytes > length)
+      sync_bytes = length;
+    memcpy(input->sync + input->delivered, buffer, sync_bytes);
+  }
+  input->offset += length;
+  input->delivered += length;
+  if (input->header_left)
+    input->header_left -= length;
+  return ((ssize_t)length);
 }
 
 /*
@@ -506,6 +621,8 @@ main(int argc, char *argv[])
   struct sigaction	action;
   const char		*content_type = getenv("CONTENT_TYPE");
   int			report_pages;
+  raster_input_t        input = { 0 };
+  size_t                header_size = sizeof(cups_page_header2_t);
 
   if (argc < 6 || argc > 7)
   {
@@ -544,17 +661,42 @@ main(int argc, char *argv[])
   */
   error = load_job_options(argv[5], &job);
 
-  if (!error && (in = cupsRasterOpen(fd, CUPS_RASTER_READ)) == NULL)
+  input.fd = fd;
+  if (!error && (in = cupsRasterOpenIO(read_raster, &input, CUPS_RASTER_READ)) == NULL)
     error = "Unable to read CUPS raster stream.";
+  if (!error)
+  {
+    int apple = !memcmp(input.sync, "UNIR", 4) || !memcmp(input.sync, "RINU", 4);
+    input.compressed = !memcmp(input.sync, "RaS2", 4) ||
+                       !memcmp(input.sync, "2SaR", 4) || apple;
+    if (apple)
+      header_size = 32;
+    else if (!memcmp(input.sync, "RaSt", 4) || !memcmp(input.sync, "tSaR", 4))
+      header_size = sizeof(cups_page_header_t);
+  }
   if (!error && (out = cupsRasterOpen(1, CUPS_RASTER_WRITE_PWG)) == NULL)
     error = "Unable to open PWG raster output stream.";
 
-  while (!error && !job_canceled && cupsRasterReadHeader2(in, &header))
+  while (!error && !job_canceled)
   {
+    uint64_t before_header = input.delivered;
+    input.header_left = header_size;
+    if (!cupsRasterReadHeader2(in, &header))
+    {
+      if (!job_canceled && (input.failed || input.delivered != before_header))
+        error = "Truncated or invalid raster page header.";
+      break;
+    }
+    input.header_left = 0;
     page ++;
     if ((error = layout_page(&header, &layout)) != NULL ||
         (error = make_pwg_header(&header, &layout, &job, &pwg)) != NULL)
       break;
+
+    input.rows_left = header.cupsHeight;
+    input.row_bytes = header.cupsBytesPerLine;
+    input.bpp = layout.in_bpp;
+    input.row_left = input.repeat = input.packet_left = 0;
 
     fprintf(stderr,
             "DEBUG: Page %u: rendered %ux%u -> sheet %ux%u at %ux%udpi, "

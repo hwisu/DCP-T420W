@@ -36,7 +36,8 @@ def three_page_pdf():
 
 class PrintPipelineTests(unittest.TestCase):
     def check_pipeline(self, options, dimensions, space, pages=1, multiple=False,
-                       copies=1, media="iso_a4_210x297mm", render_type=None):
+                       copies=1, media="iso_a4_210x297mm", render_type=None,
+                       page_ids=None):
         with tempfile.TemporaryDirectory() as tmp:
             source = ROOT / "test/testpage-a4.pdf"
             if multiple:
@@ -66,6 +67,7 @@ class PrintPipelineTests(unittest.TestCase):
             else:
                 self.assertEqual(len(accounting), pages)
             data, offset, count = converted.stdout, 4, 0
+            actual_ids = []
             self.assertEqual(data[:4], b"RaS2")
             while offset < len(data):
                 header = parse_header(data[offset:offset + HEADER_LEN])
@@ -77,9 +79,31 @@ class PrintPipelineTests(unittest.TestCase):
                 rows, offset = decode_page(data, offset + HEADER_LEN, header)
                 self.assertEqual(len(rows), header["cupsHeight"])
                 self.assertTrue(all(len(row) == header["cupsBytesPerLine"] for row in rows))
+                if page_ids is not None:
+                    # The three-page fixture paints a 100pt square at (50,50),
+                    # with red = 0, 0.5, 1 identifying pages 1, 2 and 3.
+                    # Read inside it, in full-page top-down raster coordinates.
+                    sample = rows[len(rows) - 420][420 * 3:420 * 3 + 3]
+                    self.assertEqual(sample[1:], bytes([0, 0]))
+                    actual_ids.append(min(range(3), key=lambda i: abs(sample[0] - i * 127.5)) + 1)
                 count += 1
             self.assertEqual(count, pages)
             self.assertEqual(offset, len(data))
+            if page_ids is not None:
+                self.assertEqual(actual_ids, page_ids)
+
+    def test_default_reverse_and_explicit_page_order(self):
+        for render_type, size in [(None, (2480, 3508)),
+                                  ("image/pwg-raster", (2480, 3507))]:
+            for option, expected in [("", [3, 2, 1]),
+                                     ("outputorder=normal", [1, 2, 3]),
+                                     ("outputorder=reverse", [3, 2, 1]),
+                                     ("page-set=odd", [3, 1]),
+                                     ("page-set=even", [2])]:
+                with self.subTest(option=option, render_type=render_type):
+                    self.check_pipeline("cupsPrintQuality=Draft ColorModel=RGB " + option,
+                                        size, 19, pages=len(expected), multiple=True,
+                                        render_type=render_type, page_ids=expected)
 
     def test_copies_are_not_multiplied(self):
         for copies in (1, 10, 11):

@@ -109,11 +109,16 @@ fi
 
 say "Device  -> $URI"
 
+set --
+if grep -q '^\*DefaultMediaType: Com.brotherBp71$' "/etc/cups/ppd/$QUEUE.ppd" 2>/dev/null; then
+  set -- -o MediaType=com.brother-bp71
+fi
 lpadmin -p "$QUEUE" \
         -D "Brother DCP-T420W" \
         -L "" \
         -v "$URI" \
         -P "$PPD_DIR/$PPD_NAME" \
+        "$@" \
         -o printer-is-shared=false \
         -E
 

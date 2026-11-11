@@ -33,31 +33,39 @@ Printers & Scanners**, using **Brother DCP-T420W (PWG Raster)** as the driver.
 
 ## 2. Print
 
-For everyday documents, use **A4**, **Plain Paper** and **Standard Document** quality.
+**Since 1.5.0, colour is on the main print screen, and paper and quality are in
+Media & Quality.** There is no need to open Printer Options → Printer Features.
 
-| What you want | Where to find it in the print dialog |
+| Option | Where to find it |
 |---|---|
-| Colour or grayscale; quality; paper type | **Printer Options → Printer Features** |
-| Only odd or even pages | **Paper Handling → Sheets to Print** |
-| First page first | **Paper Handling → Sheet Order → Normal** |
-| Last page first | **Paper Handling → Sheet Order → Reverse** |
+| Colour / grayscale | **Print in Color** switch on the main screen |
+| Quality with resolution | Top-level **Presets**: Eco **300 dpi**, Standard **600 dpi**, High Quality **600 dpi** |
+| Paper type, paper source, quality individually | Expand **Media & Quality** to see all three controls |
+| Paper size, borderless sizes, orientation, copies, page range | Main print screen |
+| Pages per sheet, border, mirror | **Layout** |
+| Odd/even pages, collation, sheet order, scaling | **Paper Handling** |
+| Watermark | **Watermark** |
 
-**Changed in 1.4.0:** automatic page order now prints the **last page first**.
-After upgrading, choose **Normal** if you want the previous order. Saved presets
-with an explicit page order can override this default.
+Eight built-in presets appear immediately: **Color/Grayscale Document ×
+Eco/Standard/High Quality**, plus **Glossy Photo / Brother BP71 Photo — High Quality
+(600 dpi)**. Document presets select plain paper; photo presets select their
+named photo paper. For everyday documents choose **A4 + Color Document — Standard
+(600 dpi)**. Check size, page range, copies, orientation and sheet order separately.
 
-To avoid opening Printer Features every time, save these combinations using
-**Presets → Save Current Settings as Preset** and select this Brother printer:
+**DPI describes the output raster resolution.** Standard and High Quality both
+use 600 dpi but send different quality modes to the printer. The native macOS
+quality control uses its own Draft/Normal/Best labels; DPI is shown in the preset
+names. Those three labels correspond to Eco 300 dpi, Standard 600 dpi and High
+Quality 600 dpi.
 
-| Suggested preset | Colour | Quality | Paper |
-|---|---|---|---|
-| Colour document · A4 | Colour | Standard Document | A4, plain |
-| Grayscale document · A4 | Grayscale | Standard Document | A4, plain |
-| Save ink · grayscale A4 | Grayscale | Eco | A4, plain |
+macOS controls the layout and collapsed sections; a driver cannot force all
+sections to stay expanded. Expand the sections you need to adjust their controls
+inline. Available controls and whether expansion is remembered depend on the app
+and macOS version.
 
-These are presets you save yourself, not shortcuts automatically added by the
-installer. Check page order, scaling and copies before saving. The printer has
-no automatic two-sided printing; borderless printing requires photo paper.
+Automatic sheet order prints the **last page first** (since 1.4.0). Choose
+**Normal** for page 1 first. Existing presets can override page order. This
+printer has no automatic two-sided printing; borderless printing needs photo paper.
 
 ## 3. Scan
 
@@ -98,7 +106,7 @@ Users reported **v1.3.4 works fine** on:
 - **Golden Gate 27.0.1 (26A434)**
 - **Tahoe 26.7.1 (25G241)**
 
-These reports concern v1.3.4, not v1.4.0 or Brother's separate ICA driver.
+These reports concern v1.3.4, not v1.5.0 or Brother's separate ICA driver.
 
 ## If something does not work
 

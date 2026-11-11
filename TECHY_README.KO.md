@@ -6,6 +6,27 @@
 빌드·검증, 고장 진단과 보안 설정을 다룹니다. 장치별 관찰 결과와 실측 기록은
 [PITFALLS.md](PITFALLS.md)에 영문으로 보존되어 있습니다.
 
+## 1.5.0: 기본 인쇄 옵션과 DPI 표시
+
+- `APAirPrint: True`로 macOS 기본 컬러 스위치와 **미디어 및 품질** 컨트롤을 사용합니다.
+  실제 기기가 AirPrint를 지원한다는 뜻은 아닙니다. 기존 PWG 변환 필터는 계속 필요하며
+  프린터 공유 설정도 별개입니다. 자동 PPD 교체나 필터 우회는 추가하지 않습니다.
+- 한·영 드라이버 프리셋 8개를 제공합니다. 6개 문서 프리셋은 색상·품질·일반 용지를,
+  2개 사진 프리셋은 컬러·고화질·각 인화지를 설정합니다. 이름에 출력 래스터 DPI를 표시합니다.
+- macOS 기본 품질 메뉴의 ‘초안·일반·최상’ 이름과 섹션 펼침 상태는 OS가 관리합니다.
+  PPD에서 이를 임의로 바꾸거나 모든 섹션을 항상 펼치도록 지정할 수는 없습니다.
+- CUPS 클라이언트에도 품질 3단계가 모두 광고됩니다. 이전에는 `cupsPrintQuality` 선택지가
+  있어도 macOS CUPS의 IPP 응답에는 표준만 나타났습니다.
+- BP71의 PPD 선택값을 `com.brother-bp71`로 수정했습니다. 이전 `Com.brotherBp71`은
+  macOS CUPS에서 `com.brother-bp-71`로 잘못 변환됐습니다. 오래된 BP71 사용자 프리셋은
+  새 ‘BP71 사진’ 프리셋으로 바꾸거나 다시 저장하세요. 필터는 이전 CLI 표기도 인식합니다.
+
+텍스트 편집기의 실제 인쇄 창에서 기본 컬러 스위치·미디어 및 품질·DPI 프리셋을
+확인했습니다. 루프백 주소를 향하는 중지된 검증 큐에서 생성한 작업의 색상·품질 설정도
+확인했으며, 테스트 작업은 취소했습니다. `make check`의 PDF→래스터 검증은 8개
+프리셋의 실제 DPI·색 공간·용지 종류를 확인합니다. 새 버전으로 실제 용지를 출력한
+검증은 별도입니다.
+
 ## 1.4.0 변경 사항과 이전 버전에서의 전환
 
 **동작 변경: 기본 출력 순서가 역순입니다.** PPD에 `DefaultOutputOrder: Reverse`를 선언하여
@@ -66,7 +87,7 @@ macOS에서 차단될 수 있습니다. 이 저장소의 파일을 신뢰하는 
 Gatekeeper를 시스템 전체에서 해제할 필요는 없습니다.
 
 ```sh
-sudo installer -pkg DCP-T420W-1.4.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.5.0.pkg -target /
 ```
 
 명령줄 설치는 공유 선택 화면을 표시하지 않습니다. 공유를 켜는 명령줄 설치 예시는
@@ -94,7 +115,7 @@ Python은 PPD 생성·테스트용이며 배포 실행 파일의 의존성이 �
 ```sh
 make
 make check
-./packaging/build-pkg.sh              # build/DCP-T420W-1.4.0.pkg
+./packaging/build-pkg.sh              # build/DCP-T420W-1.5.0.pkg
 sudo ./install.sh                    # 인쇄 드라이버 설치
 sudo make -C scanner install          # brscan 별도 설치
 ```

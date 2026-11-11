@@ -7,6 +7,7 @@ Set BROTHER_FILTER / BROTHER_SCANNER to test sanitizer or packaged binaries.
 """
 
 import contextlib
+import ctypes
 import http.server
 import os
 from pathlib import Path
@@ -98,6 +99,49 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(h["cupsColorSpace"], 18)
         self.assertEqual(rows[1:3], [bytes([255, 76, 150]) + b"\xff" * 1047,
                                     bytes([255, 27, 0]) + b"\xff" * 1047])
+
+    def test_media_choices_and_legacy_bp71(self):
+        for choice, keyword in [("Stationery", "stationery"),
+                                ("StationeryInkjet", "stationery-inkjet"),
+                                ("PhotographicGlossy", "photographic-glossy"),
+                                ("com.brother-bp71", "com.brother-bp71"),
+                                ("Com.brotherBp71", "com.brother-bp71")]:
+            with self.subTest(choice=choice):
+                result = self.convert(raster(), f"MediaType={choice}")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                header = parse_header(result.stdout[4:4 + HEADER_LEN])
+                self.assertEqual(header["MediaType"], keyword)
+
+    def test_cups_backend_media_mapping(self):
+        # Check the *installed* CUPS cache, not just our header conversion:
+        # Com.brotherBp71 used to emit the right raster string but the wrong
+        # IPP media-type (com.brother-bp-71) from the backend.
+        cups = ctypes.CDLL("/usr/lib/libcups.2.dylib")
+        for name, args, result in [
+            ("ppdOpenFile", [ctypes.c_char_p], ctypes.c_void_p),
+            ("ppdClose", [ctypes.c_void_p], None),
+            ("_ppdCacheCreateWithPPD", [ctypes.c_void_p], ctypes.c_void_p),
+            ("_ppdCacheDestroy", [ctypes.c_void_p], None),
+            ("_ppdCacheGetType", [ctypes.c_void_p, ctypes.c_char_p], ctypes.c_char_p),
+        ]:
+            function = getattr(cups, name)
+            function.argtypes, function.restype = args, result
+        ppd = cups.ppdOpenFile(os.fsencode(ROOT / "ppd/Brother-DCP-T420W.ppd"))
+        self.assertTrue(ppd)
+        cache = None
+        try:
+            cache = cups._ppdCacheCreateWithPPD(ppd)
+            self.assertTrue(cache)
+            for choice, expected in [(b"Stationery", b"stationery"),
+                                     (b"StationeryInkjet", b"stationery-inkjet"),
+                                     (b"PhotographicGlossy", b"photographic-glossy"),
+                                     (b"com.brother-bp71", b"com.brother-bp71")]:
+                with self.subTest(choice=choice):
+                    self.assertEqual(cups._ppdCacheGetType(cache, choice), expected)
+        finally:
+            if cache:
+                cups._ppdCacheDestroy(cache)
+            cups.ppdClose(ppd)
 
     def test_rejects_invalid_geometry(self):
         cases = [dict(cupsImagingBBox=[0, 0, 2, float("nan")]),

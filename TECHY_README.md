@@ -32,6 +32,28 @@ The two v1.3.4 reports are community compatibility confirmations, not a full
 feature-by-feature test matrix. They do not establish compatibility of
 Brother's separate ICA scanner driver.
 
+## Changes in 1.5.0
+
+- Use `APAirPrint: True` to select macOS' native colour switch and **Media &
+  Quality** controls. This is a UI hint for the local driver, not a claim that
+  the physical printer understands AirPrint. Keep both raster conversion edges;
+  do not replace the PPD automatically or bypass the filter. Sharing remains separate.
+- Supply eight localized `APPrinterPreset` entries with raster DPI in their names:
+  six colour/grayscale document quality combinations on plain paper, and two
+  high-quality colour photo presets for glossy and BP71 paper.
+- macOS owns its Draft/Normal/Best labels and section disclosure state. The
+  driver cannot force all sections open or rename those built-in quality labels.
+- Advertise all three qualities to IPP clients. On this Mac, the previous
+  `cupsPrintQuality` UI alone advertised only Normal via CUPS.
+- Correct the BP71 choice to `com.brother-bp71`. The previous `Com.brotherBp71`
+  became `com.brother-bp-71` in macOS CUPS. Re-save old BP71 user presets or use
+  the new built-in BP71 preset. The filter also accepts the old CLI spelling.
+
+Verified in TextEdit's actual print dialog, plus a job submitted to a stopped
+loopback-only test queue and then cancelled. The PDF pipeline tests check actual
+raster DPI, colour space and media type for every built-in preset. Physical
+printing with this version remains separate from those checks.
+
 ## Changes in 1.4.0
 
 **Behavior change: reverse page order is now the default.** The PPD declares
@@ -129,7 +151,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.4.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.5.0.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -242,7 +264,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.4.0.pkg \
+sudo installer -pkg DCP-T420W-1.5.0.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -312,27 +334,22 @@ envelopes, 0 for borderless.
 
 ### Finding the options in Preview
 
-macOS keeps these controls in collapsed sections of the print panel. In
-Preview, open **File → Print**, then use:
+Open **File → Print**. Colour, copies, size (including borderless variants),
+orientation and page range are on the main screen. Expand **Media & Quality**
+for source, paper type and quality, **Layout** for pages per sheet, and **Paper
+Handling** for collation, odd/even sheets, order and scaling. macOS also exposes
+its Watermark section. An application's own print dialog may differ.
 
-* **Paper Handling → Sheets to Print** — All Sheets, Odd Only or Even Only.
-  This is a standard macOS page-selection control, not a printer feature. It is
-  disabled for a one-page PDF because there is no useful subset to select.
-* **Printer Options → Printer Features** — Color Mode, Print Quality and Paper
-  Type. Quality choices are Eco, Standard Document and High Quality. These entries
-  come from this driver's PPD and are available to macOS applications that show
-  printer features.
+Top-level **Presets** includes eight driver-defined combinations with DPI in
+their names. These ship with the PPD; users no longer have to create them first.
+Document presets select plain paper; photo presets select the named photo media.
+The native quality menu still says Draft/Normal/Best (300/600/600 raster dpi).
+Normal and Best have the same resolution but send different IPP quality values.
 
-**Paper Handling → Sheet Order → Automatic** follows the driver's reverse
-order default in 1.4.0. Choose **Normal** to print page 1 first. Reopen the
-application after changing the installed PPD if it still shows cached labels.
-
-For fewer clicks, configure A4/plain paper once, then choose **Presets → Save
-Current Settings as Preset**, limit it to this Brother printer, and save these
-three combinations: colour + standard, grayscale + standard, and grayscale +
-eco. Saved job presets can also retain paper size, orientation, scaling and
-copies, so review those values before saving. These presets belong to the
-current macOS user and are not part of the installer payload.
+Automatic sheet order retains the reverse default from 1.4.0. Reopen the printing
+app after a PPD upgrade if it still shows the old interface. The layout and
+whether expanded sections are remembered are controlled by macOS and the app.
+Review page range, copies, orientation, size and order when switching presets.
 
 Do not add a second odd/even option to the PPD: Preview already passes its
 selection to CUPS as `page-set=odd` or `page-set=even`, and `cgpdftoraster`

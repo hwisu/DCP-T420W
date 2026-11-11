@@ -124,20 +124,19 @@ The same applies to `cupsPageSize`, `cupsImagingBBox` and
 configure them. Send print quality as the IPP `print-quality` attribute
 instead; the printer lists it in `print-quality-supported`.
 
-### 1.6 PPD choice names round-trip through `pwg_unppdize_name()`
+### 1.6 PPD choice names must round-trip through the installed CUPS
 
-**Verified.** CUPS converts a PPD `*MediaType` choice to an IPP keyword by
-lowercasing and hyphenating before uppercase letters. So
+The earlier claim that `Com.brotherBp71` round-trips correctly was wrong on
+macOS CUPS: a live `Get-Printer-Attributes` response advertised
+`com.brother-bp-71`, whereas the physical device advertises `com.brother-bp71`.
+Version 1.5.0 uses `com.brother-bp71`, which preserves the exact keyword. The
+filter accepts both spellings for compatibility with old command-line jobs;
+old GUI BP71 presets should be recreated.
 
-```
-Com.brotherBp71    -> com.brother-bp71
-PhotographicGlossy -> photographic-glossy
-StationeryInkjet   -> stationery-inkjet
-```
-
-These *are* the printer's keywords, so the odd-looking choice names are
-correct and should not be "tidied up". Renaming `Com.brotherBp71` to something
-prettier silently breaks the media-type mapping.
+`PhotographicGlossy` and `StationeryInkjet` still map to `photographic-glossy`
+and `stationery-inkjet`. Check CUPS' actual IPP response as well as the raster
+header: declaring an arbitrary `cupsMediaType` attribute is not a supported
+cache-mapping override.
 
 ### 1.7 Resolution: two different attributes, two different answers
 

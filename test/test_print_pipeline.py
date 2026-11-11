@@ -37,7 +37,7 @@ def three_page_pdf():
 class PrintPipelineTests(unittest.TestCase):
     def check_pipeline(self, options, dimensions, space, pages=1, multiple=False,
                        copies=1, media="iso_a4_210x297mm", render_type=None,
-                       page_ids=None):
+                       page_ids=None, dpi=None, media_type=None, quality=None):
         with tempfile.TemporaryDirectory() as tmp:
             source = ROOT / "test/testpage-a4.pdf"
             if multiple:
@@ -59,6 +59,8 @@ class PrintPipelineTests(unittest.TestCase):
             converted = subprocess.run([FILTER, *args, str(raster)], capture_output=True,
                                        env=env, timeout=90)
             self.assertEqual(converted.returncode, 0, converted.stderr)
+            if quality is not None:
+                self.assertIn(f"quality={quality}".encode(), converted.stderr)
             accounting = [line for line in converted.stderr.splitlines() if line.startswith(b"PAGE:")]
             if render_type == "image/pwg-raster":
                 self.assertEqual(accounting, [])
@@ -74,6 +76,10 @@ class PrintPipelineTests(unittest.TestCase):
                 self.assertEqual((header["cupsWidth"], header["cupsHeight"]), dimensions)
                 self.assertEqual(header["cupsColorSpace"], space)
                 self.assertEqual(header["cupsPageSizeName"], media)
+                if dpi is not None:
+                    self.assertEqual(header["HWResolution"], [dpi, dpi])
+                if media_type is not None:
+                    self.assertEqual(header["MediaType"], media_type)
                 self.assertEqual(header["NumCopies"], 1)
                 self.assertEqual(header["ImagingBoundingBox"], [0, 0, 0, 0])
                 rows, offset = decode_page(data, offset + HEADER_LEN, header)
@@ -153,6 +159,25 @@ class PrintPipelineTests(unittest.TestCase):
         ]:
             with self.subTest(options=options):
                 self.check_pipeline(options, size, space)
+
+    def test_native_quality_presets(self):
+        # Exercise the actual PPD preset expansion in Apple's renderer and
+        # our filter. A DPI in a menu label must describe the emitted pixels.
+        for color, space in [("RGB", 19), ("Gray", 18)]:
+            for quality, dpi, value in [("Draft", 300, 3), ("Normal", 600, 4),
+                                        ("High", 600, 5)]:
+                with self.subTest(color=color, quality=quality):
+                    self.check_pipeline(
+                        f"APPrinterPreset={color}_{quality} PageSize=3.5x5",
+                        (int(3.5 * dpi), 5 * dpi), space,
+                        media="oe_photo-l_3.5x5in", dpi=dpi,
+                        media_type="stationery", quality=value)
+        for preset, paper in [("PhotoGlossy", "photographic-glossy"),
+                              ("PhotoBP71", "com.brother-bp71")]:
+            with self.subTest(preset=preset):
+                self.check_pipeline(f"APPrinterPreset={preset} PageSize=3.5x5.Borderless",
+                                    (2100, 3000), 19, media="oe_photo-l_3.5x5in",
+                                    dpi=600, media_type=paper, quality=5)
 
     def test_odd_even_selection(self):
         for selection, pages in [("odd", 2), ("even", 1)]:

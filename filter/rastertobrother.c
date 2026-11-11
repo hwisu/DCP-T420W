@@ -201,7 +201,8 @@ media_type_keyword(const char *choice)
     return ("stationery-inkjet");
   if (!strcasecmp(choice, "PhotographicGlossy"))
     return ("photographic-glossy");
-  if (!strcasecmp(choice, "Com.brotherBp71"))
+  if (!strcasecmp(choice, "com.brother-bp71") ||
+      !strcasecmp(choice, "Com.brotherBp71"))
     return ("com.brother-bp71");
 
   return ("stationery");
@@ -242,6 +243,12 @@ load_job_options(const char *option_string, job_options_t *job)
   }
 
   ppdMarkDefaults(ppd);
+  /* Preserve command-line jobs using the old BP71 spelling. Only translate
+   * after the queue's PPD has been upgraded; old queues still use the alias. */
+  const char *media_option = cupsGetOption("MediaType", num_options, options);
+  if (media_option && !strcasecmp(media_option, "Com.brotherBp71") &&
+      ppdFindChoice(ppdFindOption(ppd, "MediaType"), "com.brother-bp71"))
+    num_options = cupsAddOption("MediaType", "com.brother-bp71", num_options, &options);
   cupsMarkOptions(ppd, num_options, options);
 
   if (ppdConflicts(ppd))

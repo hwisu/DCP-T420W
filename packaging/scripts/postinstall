@@ -23,7 +23,12 @@ fi
 # installation. Supplying only -P preserves the device URI, sharing state and
 # the rest of the queue configuration.
 if /usr/bin/lpstat -p "$QUEUE" >/dev/null 2>&1; then
-  if /usr/sbin/lpadmin -p "$QUEUE" -P "$PPD" >>"$LOG" 2>&1; then
+  # Preserve an old BP71 queue default under its corrected 1.5.0 keyword.
+  set --
+  if /usr/bin/grep -q '^\*DefaultMediaType: Com.brotherBp71$' "/etc/cups/ppd/$QUEUE.ppd" 2>/dev/null; then
+    set -- -o MediaType=com.brother-bp71
+  fi
+  if /usr/sbin/lpadmin -p "$QUEUE" -P "$PPD" "$@" >>"$LOG" 2>&1; then
     log "updated PPD for existing queue $QUEUE"
   else
     log "could not update PPD for existing queue $QUEUE"

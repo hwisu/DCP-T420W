@@ -100,6 +100,45 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(rows[1:3], [bytes([255, 76, 150]) + b"\xff" * 1047,
                                     bytes([255, 27, 0]) + b"\xff" * 1047])
 
+    def test_aligned_rows_and_gray_input(self):
+        # Exercise every 32-bit alignment remainder with nonwhite padding.
+        # Neither alignment bytes nor the last image row may leak into margins.
+        for channels, space in [(1, 18), (3, 19)]:
+            for width in range(1, 5):
+                pixels = [bytes((i * 53 + y * 79) % 255 for i in range(width * channels))
+                          for y in range(2)]
+                strides = {width * channels, (width * channels + 3) & ~3}
+                # libcups requires whole pixels, including alignment padding.
+                for stride in sorted(s for s in strides if s % channels == 0):
+                    source = raster(cupsWidth=width, cupsBytesPerLine=stride,
+                                    cupsBitsPerPixel=channels * 8, cupsColorSpace=space,
+                                    cupsNumColors=channels,
+                                    cupsImagingBBox=[0.24, 359.28, (width + 1) * 0.24, 359.76])
+                    source = source[:4 + HEADER_LEN] + b"".join(
+                        row + b"\x7f" * (stride - len(row)) for row in pixels)
+                    for gray in (False, True) if channels == 3 else (False,):
+                        with self.subTest(channels=channels, width=width, stride=stride, gray=gray):
+                            options = "ColorModel=Gray" if gray else ""
+                            result = self.convert(source, options)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            h = parse_header(result.stdout[4:4 + HEADER_LEN])
+                            rows, end = decode_page(result.stdout, 4 + HEADER_LEN, h)
+                            output_channels = 1 if gray else channels
+                            self.assertEqual(h["cupsColorSpace"], 18 if output_channels == 1 else 19)
+                            expected = [b"\xff" * (1050 * output_channels)] * 1500
+                            for y, row in enumerate(pixels, 1):
+                                if gray:
+                                    row = bytes((77 * r + 151 * g + 28 * b) >> 8
+                                                for r, g, b in zip(row[::3], row[1::3], row[2::3]))
+                                expected[y] = (b"\xff" * output_channels + row
+                                               + b"\xff" * ((1049 - width) * output_channels))
+                            self.assertEqual(rows, expected)
+                            self.assertEqual(end, len(result.stdout))
+                            truncated = self.convert(source[:-1], options)
+                            self.assertEqual(truncated.returncode, 1, truncated.stderr)
+                            self.assertIn(b"Truncated", truncated.stderr)
+                            self.assertNotIn(b"PAGE:", truncated.stderr)
+
     def test_media_choices_and_legacy_bp71(self):
         for choice, keyword in [("Stationery", "stationery"),
                                 ("StationeryInkjet", "stationery-inkjet"),

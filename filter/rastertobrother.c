@@ -552,30 +552,37 @@ copy_page(cups_raster_t             *in,
   unsigned	in_bytes  = header->cupsBytesPerLine;
   unsigned	out_bytes = pwg->cupsBytesPerLine;
   unsigned	bpp       = pwg->cupsBitsPerPixel / 8;
+  unsigned	image_bytes = header->cupsWidth * bpp;
+  unsigned	bottom_px = layout->top_px + header->cupsHeight;
   int		convert_gray = (layout->in_bpp >= 3 && bpp == 1);
-  unsigned char	*in_line  = malloc(in_bytes);
+  int		needs_copy = convert_gray || in_bytes != image_bytes;
+  unsigned char	*in_line  = needs_copy ? malloc(in_bytes) : NULL;
   unsigned char	*out_line = malloc(out_bytes);
+  unsigned char	*image_line;
   const char	*error = NULL;
   unsigned	y;
 
-  if (!in_line || !out_line)
+  if ((needs_copy && !in_line) || !out_line)
   {
     free(in_line);
     free(out_line);
     return ("Out of memory allocating raster line buffers.");
   }
 
+ /*
+  * Keep the side margins white while overwriting the image band each row.
+  * Unpadded input in the output color space can be read directly into place;
+  * only row alignment or RGB-to-gray conversion needs a staging buffer.
+  */
+  memset(out_line, 0xFF, out_bytes);
+  image_line = out_line + layout->left_px * bpp;
+
   for (y = 0; y < layout->full_height && !job_canceled; y ++)
   {
-   /*
-    * White is 0xFF in both sGray and sRGB, so a memset gives us blank paper;
-    * rows outside the rendered band stay exactly that.
-    */
-    memset(out_line, 0xFF, out_bytes);
-
-    if (y >= layout->top_px && y < layout->top_px + header->cupsHeight)
+    if (y >= layout->top_px && y < bottom_px)
     {
-      if (cupsRasterReadPixels(in, in_line, in_bytes) != in_bytes)
+      if (cupsRasterReadPixels(in, needs_copy ? in_line : image_line,
+                               in_bytes) != in_bytes)
       {
         if (!job_canceled)
           error = "Truncated raster page.";
@@ -588,17 +595,18 @@ copy_page(cups_raster_t             *in,
         * Rec. 601 luma, computed on the sRGB values as CUPS does.
         */
         const unsigned char	*src = in_line;
-        unsigned char		*dst = out_line + layout->left_px;
+        unsigned char		*dst = image_line;
         unsigned		i;
 
         for (i = 0; i < header->cupsWidth; i ++, src += layout->in_bpp)
           *dst++ = (unsigned char)((77u * src[0] + 151u * src[1] +
                                     28u * src[2]) >> 8);
       }
-      else
-        memcpy(out_line + layout->left_px * bpp, in_line,
-               header->cupsWidth * bpp);
+      else if (needs_copy)
+        memcpy(image_line, in_line, image_bytes);
     }
+    else if (y == bottom_px)
+      memset(image_line, 0xFF, image_bytes);
 
     if (cupsRasterWritePixels(out, out_line, out_bytes) == 0)
     {

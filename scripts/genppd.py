@@ -10,6 +10,7 @@ hand-rounded. Run scripts/probe.sh to re-read those attributes from a printer.
 """
 
 import sys
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Geometry helpers
@@ -98,11 +99,23 @@ MEDIA_TYPES = [
 # top-level Presets control, and also advertise all qualities to CUPS clients.
 # Set the paper type explicitly: macOS otherwise resets it when applying a
 # driver preset. Size/source and page handling are not encoded in our presets.
-QUALITIES = [
-    ("Draft", "low", 300, "Eco", "에코"),
-    ("Normal", "mid", 600, "Standard", "표준"),
-    ("High", "high", 600, "High Quality", "고화질"),
-]
+class Quality(NamedTuple):
+    level: str
+    dpi: int
+    preset_en: str
+    preset_ko: str
+    option_en: str
+    option_ko: str
+
+
+QUALITIES = {
+    "Draft": Quality("low", 300, "Eco", "에코",
+                     "Eco ({dpi}dpi, saves ink)", "에코 ({dpi}dpi, 잉크 절약)"),
+    "Normal": Quality("mid", 600, "Standard", "표준",
+                      "Standard Document ({dpi}dpi)", "표준 문서 ({dpi}dpi)"),
+    "High": Quality("high", 600, "High Quality", "고화질",
+                    "High Quality ({dpi}dpi)", "고화질 ({dpi}dpi)"),
+}
 
 
 def presets():
@@ -110,17 +123,19 @@ def presets():
         ("RGB", "color", "Color", "컬러"),
         ("Gray", "monochrome", "Grayscale", "흑백"),
     ]:
-        for quality, level, dpi, en_quality, ko_quality in QUALITIES:
-            yield (f"{color}_{quality}", color, mode, quality, level,
+        for name, quality in QUALITIES.items():
+            yield (f"{color}_{name}", color, mode, name, quality.level,
                    "Stationery", "none",
-                   f"{en_color} Document - {en_quality} ({dpi} dpi)",
-                   f"{ko_color} 문서 · {ko_quality} ({dpi} dpi)")
+                   f"{en_color} Document - {quality.preset_en} ({quality.dpi} dpi)",
+                   f"{ko_color} 문서 · {quality.preset_ko} ({quality.dpi} dpi)")
+    high = QUALITIES["High"]
     for name, media, en, ko in [
         ("PhotoGlossy", "PhotographicGlossy", "Glossy Photo", "광택 사진"),
         ("PhotoBP71", "com.brother-bp71", "Brother BP71 Photo", "BP71 사진"),
     ]:
-        yield (name, "RGB", "color", "High", "high", media, "glossy",
-               f"{en} - High Quality (600 dpi)", f"{ko} · 고화질 (600 dpi)")
+        yield (name, "RGB", "color", "High", high.level, media, "glossy",
+               f"{en} - {high.preset_en} ({high.dpi} dpi)",
+               f"{ko} · {high.preset_ko} ({high.dpi} dpi)")
 
 # Custom size range, from custom_min_88.9x127mm / custom_max_215.9x355.6mm.
 CUSTOM_MIN_W, CUSTOM_MIN_H = pt(8890), pt(12700)
@@ -285,15 +300,12 @@ def main(out=sys.stdout):
     w("*OrderDependency: 10 AnySetup *cupsPrintQuality\n")
     w('*ko.Translation cupsPrintQuality/인쇄 품질: ""\n')
     w("*DefaultcupsPrintQuality: Normal\n")
-    w('*cupsPrintQuality Draft/Eco (300dpi, saves ink): '
-      '"<</HWResolution[300 300]>>setpagedevice"\n')
-    w('*ko.cupsPrintQuality Draft/에코 (300dpi, 잉크 절약): ""\n')
-    w('*cupsPrintQuality Normal/Standard Document (600dpi): '
-      '"<</HWResolution[600 600]>>setpagedevice"\n')
-    w('*ko.cupsPrintQuality Normal/표준 문서 (600dpi): ""\n')
-    w('*cupsPrintQuality High/High Quality (600dpi): '
-      '"<</HWResolution[600 600]>>setpagedevice"\n')
-    w('*ko.cupsPrintQuality High/고화질 (600dpi): ""\n')
+    for name, quality in QUALITIES.items():
+        en = quality.option_en.format(dpi=quality.dpi)
+        ko = quality.option_ko.format(dpi=quality.dpi)
+        w(f'*cupsPrintQuality {name}/{en}: '
+          f'"<</HWResolution[{quality.dpi} {quality.dpi}]>>setpagedevice"\n')
+        w(f'*ko.cupsPrintQuality {name}/{ko}: ""\n')
     w("*CloseUI: *cupsPrintQuality\n\n")
 
     # -- Media type --------------------------------------------------------

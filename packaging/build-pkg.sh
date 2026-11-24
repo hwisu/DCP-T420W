@@ -67,8 +67,11 @@ ditto --norsrc --noextattr --noacl \
     "$SHARE_PAYLOAD/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
 
 # --- 4. PPD ----------------------------------------------------------------
-echo "  generating PPD"
-python3 "$HERE/scripts/genppd.py" > "$PAYLOAD/Library/Printers/PPDs/Contents/Resources/Brother DCP-T420W.ppd"
+# The committed PPD is kept identical to genppd.py output by `make check`.
+echo "  copying PPD"
+ditto --norsrc --noextattr --noacl \
+    "$HERE/ppd/Brother-DCP-T420W.ppd" \
+    "$PAYLOAD/Library/Printers/PPDs/Contents/Resources/Brother DCP-T420W.ppd"
 
 chmod 0755 "$PAYLOAD/usr/libexec/cups/filter/rastertobrother" \
            "$PAYLOAD/usr/local/bin/brscan" \

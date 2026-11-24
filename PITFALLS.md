@@ -338,8 +338,9 @@ vs `text/xml; charset=utf-8` — none of it changes anything. Do not spend an
 evening permuting the XML the way this project did.
 
 **What to do instead:** take what the device gives you and convert locally.
-`sips` (built into macOS) handles crop, rotate, resample and format; greyscale
-and thresholding are a few lines of pixel work. That is what `brscan` does.
+ImageIO and CoreGraphics (built into macOS) handle crop, rotate, resample and
+format; greyscale and thresholding are a few lines of pixel work. That is what
+`brscan` does.
 
 Before assuming a sibling model behaves the same, test it in one shot:
 

@@ -420,12 +420,12 @@ The difference is measurable. Same scan, same options:
 | lineart PDF | 276 KB | 77 KB |
 | dependencies | `python3`, `sips` | none |
 
-macOS does ship `/usr/bin/python3` (3.9.6, and `brscan.py` still runs on it),
-but on a machine without Command Line Tools it is a stub that prompts to install
-them — not something an installer should rely on.
+macOS does ship `/usr/bin/python3`, but on a machine without Command Line
+Tools it is a stub that prompts to install them — not something an installer
+should rely on.
 
-`scanner/brscan.py` is kept because eSCL is not macOS-specific: it is the
-portable version, useful on Linux or anywhere without a Swift toolchain.
+The Python client has since been removed. It was never truly portable — it
+depended on macOS's `sips` and `dns-sd` — and this project targets macOS only.
 
 **Everything else is Python or shell, and never ships.** `scripts/genppd.py`
 generates the PPD, `test/pwgdump.py` and `test/pwg2png.py` decode PWG Raster for
@@ -462,8 +462,7 @@ package puts it in `/usr/local/bin`; from source it is:
 make -C scanner && sudo make -C scanner install
 ```
 
-It is a native universal binary with no runtime dependencies. A portable Python
-implementation of the same tool lives at `scanner/brscan.py` for non-macOS use.
+It is a native universal binary with no runtime dependencies.
 
 ```sh
 brscan                                   # full platen, colour, PDF
@@ -486,7 +485,7 @@ you get JPEG.
 
 So `brscan` sends a correct, well-formed request anyway — harmless, and
 sibling models may honour it — and then applies whatever the device ignored
-locally using CoreGraphics and ImageIO (`sips` in the Python client). `--raw`
+locally using CoreGraphics and ImageIO. `--raw`
 skips all of that and saves the scanner's bytes untouched.
 
 | Option | Where it happens |
@@ -527,7 +526,6 @@ filter/rastertobrother.c   the print filter (C, links libcups)
 filter/Makefile            builds a universal (arm64 + x86_64) binary
 ppd/Brother-DCP-T420W.ppd  generated — edit the generator, not this
 scanner/brscan.swift       eSCL scan client, native and dependency-free
-scanner/brscan.py          Python alternative (image conversion uses macOS sips)
 scanner/Makefile           builds brscan universal
 airprint/brairprint.c      publishes the queue as AirPrint, for iOS clients
 airprint/Makefile          builds brairprint universal

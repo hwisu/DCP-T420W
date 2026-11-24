@@ -1,8 +1,8 @@
 // brscan - scan from a Brother DCP-T420W (and other eSCL scanners) on macOS.
 //
-// A native rewrite of scanner/brscan.py with no runtime dependencies: no
-// Python, no sips, no SANE, no ICA plugin. Discovery uses Bonjour, transport
-// is URLSession, and the image work is ImageIO/CoreGraphics.
+// A native client with no runtime dependencies: no Python, no sips, no SANE,
+// no ICA plugin. Discovery uses Bonjour, transport is URLSession, and the
+// image work is ImageIO/CoreGraphics.
 //
 // Build:  make -C scanner        (or: swiftc -O -swift-version 6 brscan.swift -o brscan)
 //

@@ -261,8 +261,7 @@ brscan --help
 ```
 
 Swift 네이티브 구현은 Bonjour·URLSession·ImageIO·CoreGraphics를 사용하며 별도의
-Python·SANE·ICA가 필요하지 않습니다. `scanner/brscan.py`는 Python 대체 구현입니다.
-이 구현의 이미지 변환은 macOS의 `sips`를 사용합니다.
+Python·SANE·ICA가 필요하지 않습니다. 이 프로젝트는 macOS 전용입니다.
 
 ### 펌웨어의 스캔 제약
 
@@ -349,7 +348,7 @@ sudo pkgutil --forget com.hwisu.dcp-t420w.sharing
 | `filter/rastertobrother.c` | CUPS 필터, libcups 사용 |
 | `scripts/genppd.py` | PPD 생성 원본, 용지·옵션·기본값 |
 | `ppd/Brother-DCP-T420W.ppd` | 생성 결과, 직접 수정 대신 생성기 수정 |
-| `scanner/brscan.swift`, `scanner/brscan.py` | 스캔 도구 |
+| `scanner/brscan.swift` | 스캔 도구 |
 | `airprint/brairprint.c` | AirPrint 알림 |
 | `packaging/` | 설치 파일 생성과 설치 후 큐 갱신 |
 | `test/` | 래스터·스캔·macOS 인쇄 경로 검사 |

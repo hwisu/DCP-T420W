@@ -29,7 +29,7 @@ from pwg2png import decode_page, write_png
 ROOT = Path(__file__).resolve().parents[1]
 FILTER = os.environ.get("BROTHER_FILTER", str(ROOT / "filter/rastertobrother"))
 SCANNER = os.environ.get("BROTHER_SCANNER", str(ROOT / "scanner/brscan"))
-CLIENTS = [[SCANNER], [sys.executable, str(ROOT / "scanner/brscan.py")]]
+CLIENTS = [[SCANNER]]
 
 
 def raster(**overrides):

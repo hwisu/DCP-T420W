@@ -104,7 +104,7 @@ PWG names from `media-supported`. And plain A4 gets announced as
 **`A4.Borderless`** — telling an inkjet that a plain-paper page is full bleed is
 not a good default.
 
-Decode any PWG stream and check for yourself with `test/pwgdump.py`.
+Decode any PWG stream and check for yourself with `./build/pwgdump` (`test/pwgdump.swift`).
 
 ### 1.5 You cannot set the PWG `cupsInteger[]` fields through libcups
 
@@ -223,12 +223,13 @@ hard-coded `*APSupplies` URL in a shareable PPD — the hostname
 The whole chain can be exercised offline:
 
 ```sh
+make tools
 PPD=ppd/Brother-DCP-T420W.ppd /usr/libexec/cups/filter/cgpdftoraster \
     1 me test 1 "" test/testpage-a4.pdf > /tmp/page.cups
 PPD=ppd/Brother-DCP-T420W.ppd ./filter/rastertobrother \
     1 me test 1 "" < /tmp/page.cups > /tmp/page.pwg
-python3 test/pwgdump.py /tmp/page.pwg              # header fields
-python3 test/pwg2png.py /tmp/page.pwg /tmp/x.png   # decode back to an image
+./build/pwgdump /tmp/page.pwg              # header fields
+./build/pwg2png /tmp/page.pwg /tmp/x.png   # decode back to an image
 ```
 
 Decoding the output back to PNG catches inverted colours, wrong stride, off-by-one

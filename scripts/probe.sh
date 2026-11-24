@@ -4,7 +4,7 @@
 #
 # Use this to re-check a printer before regenerating the PPD, or to adapt the
 # driver to a sibling model (DCP-T425W, DCP-T430W, ...). The fields that matter
-# to scripts/genppd.py are media-supported, media-size-supported, the four
+# to scripts/genppd.swift are media-supported, media-size-supported, the four
 # media-*-margin-supported lists, print-quality-supported and
 # pwg-raster-document-type-supported.
 #
@@ -21,9 +21,11 @@ trap 'rm -rf "$TMP"' EXIT
 if [ -z "$URI" ]; then
   # Resolve the Bonjour service to the host:port ipptool needs. dns-sd never
   # exits on its own, so run it in the background and read what it printed.
-  ( dns-sd -L "Brother DCP-T420W" _ipp._tcp local >"$TMP/resolve" 2>&1 & ) || true
+  dns-sd -L "Brother DCP-T420W" _ipp._tcp local >"$TMP/resolve" 2>&1 &
+  DNS_PID=$!
   sleep 4
-  pkill -f 'dns-sd -L' 2>/dev/null || true
+  kill "$DNS_PID" 2>/dev/null || true
+  wait "$DNS_PID" 2>/dev/null || true
 
   # The line reads "... can be reached at HOST.local.:631 (interface 5)", so
   # take the token right after "at" rather than the last field.

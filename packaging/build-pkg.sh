@@ -10,7 +10,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-1.5.0}"
+VERSION="${1:-1.5.1}"
 IDENTIFIER="com.hwisu.dcp-t420w"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$HERE/build"
@@ -67,7 +67,7 @@ ditto --norsrc --noextattr --noacl \
     "$SHARE_PAYLOAD/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
 
 # --- 4. PPD ----------------------------------------------------------------
-# The committed PPD is kept identical to genppd.py output by `make check`.
+# The committed PPD is kept identical to genppd.swift output by `make check`.
 echo "  copying PPD"
 ditto --norsrc --noextattr --noacl \
     "$HERE/ppd/Brother-DCP-T420W.ppd" \

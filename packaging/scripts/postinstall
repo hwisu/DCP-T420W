@@ -10,7 +10,7 @@ QUEUE="Brother_DCP_T420W"
 PPD="/Library/Printers/PPDs/Contents/Resources/Brother DCP-T420W.ppd"
 LOG="/var/log/install.log"
 
-log() { echo "brother-dcp-t420w: $1" | tee -a "$LOG" >/dev/null 2>&1; }
+log() { echo "brother-dcp-t420w: $1" | /usr/bin/tee -a "$LOG" >/dev/null 2>&1; }
 
 if [ ! -f "$PPD" ]; then
   log "PPD missing, skipping queue setup"
@@ -56,7 +56,7 @@ log "creating queue $QUEUE for $URI"
 /usr/sbin/cupsaccept "$QUEUE" >/dev/null 2>&1
 
 # Only claim the default printer if the machine does not already have one.
-if ! /usr/bin/lpstat -d 2>/dev/null | grep -q ':'; then
+if ! /usr/bin/lpstat -d 2>/dev/null | /usr/bin/grep -q ':'; then
   /usr/sbin/lpadmin -d "$QUEUE" >/dev/null 2>&1
   log "set $QUEUE as the default printer"
 fi

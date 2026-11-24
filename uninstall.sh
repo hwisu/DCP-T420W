@@ -15,7 +15,7 @@ DROP_QUEUE=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name)       QUEUE="$2"; shift 2 ;;
+    --name)       [ $# -ge 2 ] || { echo "$1 requires a value." >&2; exit 2; }; QUEUE="$2"; shift 2 ;;
     --keep-queue) DROP_QUEUE=0; shift ;;
     *)            echo "Unknown option: $1" >&2; exit 2 ;;
   esac

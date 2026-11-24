@@ -28,8 +28,8 @@ SHARE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --uri)      URI="$2"; shift 2 ;;
-    --name)     QUEUE="$2"; shift 2 ;;
+    --uri)      [ $# -ge 2 ] || { echo "$1 requires a value." >&2; exit 2; }; URI="$2"; shift 2 ;;
+    --name)     [ $# -ge 2 ] || { echo "$1 requires a value." >&2; exit 2; }; QUEUE="$2"; shift 2 ;;
     --no-queue) MAKE_QUEUE=0; shift ;;
     --share)    SHARE=1; shift ;;
     -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
@@ -46,7 +46,16 @@ fi
 say() { printf '  %s\n' "$1"; }
 
 build() {
-  make -C "$HERE/$1" >/dev/null || make -C "$HERE/$1" native >/dev/null
+  if xcode-select -p >/dev/null 2>&1 &&
+     { make -C "$HERE/$1" >/dev/null || make -C "$HERE/$1" native >/dev/null; }; then
+    return 0
+  fi
+  if [ -x "$HERE/$1/$2" ]; then
+    say "Using prebuilt $1/$2"
+    return 0
+  fi
+  echo "Could not build $1/$2 and no prebuilt binary was found." >&2
+  exit 1
 }
 
 echo "Brother DCP-T420W driver installer"
@@ -54,7 +63,7 @@ echo "Brother DCP-T420W driver installer"
 # ---------------------------------------------------------------------------
 # 1. Filter
 # ---------------------------------------------------------------------------
-build filter
+build filter rastertobrother
 
 install -o root -g wheel -m 0755 \
         "$HERE/filter/rastertobrother" "$FILTER_DIR/rastertobrother"
@@ -77,7 +86,7 @@ fi
 # 3. AirPrint advertiser
 # ---------------------------------------------------------------------------
 # Installed either way; it only does anything once --share loads the daemon.
-build airprint
+build airprint brairprint
 
 install -d -o root -g wheel -m 0755 /usr/local/libexec
 install -o root -g wheel -m 0755 \

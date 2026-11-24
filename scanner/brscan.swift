@@ -11,8 +11,8 @@
 // full platen in colour as JPEG. brscan sends a correct request anyway, then
 // applies mode, crop, rotation and format locally.
 
-import Foundation
 import CoreGraphics
+import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -63,7 +63,7 @@ private let cancellation = Cancellation()
 
 // MARK: - Constants
 
-let unitsPerInch = 300.0        // eSCL regions are three-hundredths of an inch
+let unitsPerInch = 300.0  // eSCL regions are three-hundredths of an inch
 let mmPerInch = 25.4
 
 enum ColorMode: String {
@@ -90,7 +90,12 @@ let cropPresets: [String: (Double, Double)] = [
 // MARK: - Bonjour discovery
 
 final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
-    struct Found { let name: String; let host: String; let port: Int; let rs: String }
+    struct Found {
+        let name: String
+        let host: String
+        let port: Int
+        let rs: String
+    }
 
     private let browser = NetServiceBrowser()
     private var pending: [NetService] = []
@@ -103,15 +108,18 @@ final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
         defer { browser.stop() }
         let deadline = Date().addingTimeInterval(timeout)
         while !done, Date() < deadline,
-              RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2)) {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2))
+        {
             try cancellation.check()
         }
         try cancellation.check()
         return results
     }
 
-    func netServiceBrowser(_ b: NetServiceBrowser, didFind service: NetService,
-                           moreComing: Bool) {
+    func netServiceBrowser(
+        _ b: NetServiceBrowser, didFind service: NetService,
+        moreComing: Bool
+    ) {
         service.delegate = self
         pending.append(service)
         service.resolve(withTimeout: 4.0)
@@ -128,8 +136,10 @@ final class Discovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
         var host = sender.hostName ?? ""
         if host.hasSuffix(".") { host.removeLast() }
         if !host.isEmpty {
-            results.append(Found(name: sender.name, host: host,
-                                 port: sender.port, rs: rs))
+            results.append(
+                Found(
+                    name: sender.name, host: host,
+                    port: sender.port, rs: rs))
         }
         finish(sender)
     }
@@ -159,20 +169,24 @@ private final class Completion: @unchecked Sendable {
     private var stored: Result<HTTPReply, Error>?
 
     var result: Result<HTTPReply, Error>? {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return stored
     }
 
     func finish(_ value: Result<HTTPReply, Error>) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         stored = value
     }
 }
 
 @discardableResult
-func http(_ method: String, _ url: URL, body: Data? = nil,
-          contentType: String? = nil, timeout: TimeInterval = 300,
-          interruptible: Bool = true) throws -> HTTPReply {
+func http(
+    _ method: String, _ url: URL, body: Data? = nil,
+    contentType: String? = nil, timeout: TimeInterval = 300,
+    interruptible: Bool = true
+) throws -> HTTPReply {
     if interruptible { try cancellation.check() }
     var req = URLRequest(url: url, timeoutInterval: timeout)
     req.httpMethod = method
@@ -186,10 +200,12 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
         if let error {
             completion.finish(.failure(error))
         } else if let r = response as? HTTPURLResponse {
-            completion.finish(.success(HTTPReply(
-                status: r.statusCode,
-                location: r.value(forHTTPHeaderField: "Location"),
-                data: data ?? Data())))
+            completion.finish(
+                .success(
+                    HTTPReply(
+                        status: r.statusCode,
+                        location: r.value(forHTTPHeaderField: "Location"),
+                        data: data ?? Data())))
         }
         sem.signal()
     }
@@ -211,8 +227,9 @@ func http(_ method: String, _ url: URL, body: Data? = nil,
     case .success(let reply)?:
         return reply
     case .failure(let failure)?:
-        throw ScanError("Cannot reach \(url.host ?? "scanner"): "
-                        + failure.localizedDescription)
+        throw ScanError(
+            "Cannot reach \(url.host ?? "scanner"): "
+                + failure.localizedDescription)
     case nil:
         throw ScanError("No response from \(url)")
     }
@@ -236,7 +253,8 @@ struct PlatenCaps {
 /// eSCL documents are small and regular, so matching by name is enough and
 /// sidesteps namespace prefixes that vary between firmwares.
 func values(in doc: XMLDocument, _ name: String, under ancestor: String? = nil) -> [String] {
-    let path = (ancestor.map { "//*[local-name()='\($0)']" } ?? "")
+    let path =
+        (ancestor.map { "//*[local-name()='\($0)']" } ?? "")
         + "//*[local-name()='\(name)']"
     return ((try? doc.nodes(forXPath: path)) ?? []).compactMap {
         $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -277,8 +295,10 @@ func parseCaps(_ data: Data) throws -> PlatenCaps {
     return c
 }
 
-func scanSettings(version: String, mode: ColorMode, mime: String, dpi: Int,
-                  intent: String, width: Int, height: Int) -> Data {
+func scanSettings(
+    version: String, mode: ColorMode, mime: String, dpi: Int,
+    intent: String, width: Int, height: Int
+) -> Data {
     // Element order follows the eSCL schema sequence and the region carries
     // MustHonor, because scanners that do read the body can be strict about
     // both. The DCP-T420W reads none of it.
@@ -308,17 +328,20 @@ func scanSettings(version: String, mode: ColorMode, mime: String, dpi: Int,
 }
 
 func scannerState(base: URL) -> String {
-    guard let reply = try? http("GET", base.appendingPathComponent("ScannerStatus"),
-                                timeout: 15),
-          let doc = try? XMLDocument(data: reply.data),
-          let state = values(in: doc, "State").first
+    guard
+        let reply = try? http(
+            "GET", base.appendingPathComponent("ScannerStatus"),
+            timeout: 15),
+        let doc = try? XMLDocument(data: reply.data),
+        let state = values(in: doc, "State").first
     else { return "Unknown" }
     return state
 }
 
 func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
-    let created = try http("POST", base.appendingPathComponent("ScanJobs"),
-                           body: settings, contentType: "text/xml", timeout: 60)
+    let created = try http(
+        "POST", base.appendingPathComponent("ScanJobs"),
+        body: settings, contentType: "text/xml", timeout: 60)
     guard created.status == 200 || created.status == 201 else {
         throw ScanError("Scanner refused the job (HTTP \(created.status)).")
     }
@@ -328,8 +351,9 @@ func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
 
     // Some firmwares put an unreachable host in Location; keep ours.
     guard let resolved = URL(string: location, relativeTo: base.appendingPathComponent("ScanJobs")),
-          let target = URLComponents(url: resolved, resolvingAgainstBaseURL: true),
-          var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        let target = URLComponents(url: resolved, resolvingAgainstBaseURL: true),
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
+    else {
         throw ScanError("Bad job URL: \(location)")
     }
     comps.percentEncodedPath = target.percentEncodedPath
@@ -361,14 +385,17 @@ func runScan(base: URL, settings: Data, verbose: Bool) throws -> [Data] {
 
 func loadImage(_ data: Data) throws -> CGImage {
     guard let src = CGImageSourceCreateWithData(data as CFData, nil),
-          let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+        let img = CGImageSourceCreateImageAtIndex(src, 0, nil)
+    else {
         throw ScanError("Scanner returned data that is not a readable image.")
     }
     return img
 }
 
-func cropped(_ img: CGImage, widthMM: Double, heightMM: Double,
-             platenWmm: Double, platenHmm: Double) -> CGImage {
+func cropped(
+    _ img: CGImage, widthMM: Double, heightMM: Double,
+    platenWmm: Double, platenHmm: Double
+) -> CGImage {
     // Pixels are not square on this scanner, so scale each axis separately.
     let w = max(1, Int((min(1, widthMM / platenWmm) * Double(img.width)).rounded()))
     let h = max(1, Int((min(1, heightMM / platenHmm) * Double(img.height)).rounded()))
@@ -383,17 +410,23 @@ func rotated(_ img: CGImage, degreesClockwise: Int) throws -> CGImage {
     let swap = (d == 90 || d == 270)
     let outW = swap ? h : w, outH = swap ? w : h
 
-    guard let ctx = CGContext(data: nil, width: outW, height: outH,
-                              bitsPerComponent: 8, bytesPerRow: 0,
-                              space: img.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
-                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+    guard
+        let ctx = CGContext(
+            data: nil, width: outW, height: outH,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: img.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    else {
         throw ScanError("Could not allocate a context for rotation.")
     }
     ctx.translateBy(x: CGFloat(outW) / 2, y: CGFloat(outH) / 2)
     // CoreGraphics rotates counter-clockwise, so negate for clockwise.
     ctx.rotate(by: -CGFloat(d) * .pi / 180)
-    ctx.draw(img, in: CGRect(x: -CGFloat(w) / 2, y: -CGFloat(h) / 2,
-                             width: CGFloat(w), height: CGFloat(h)))
+    ctx.draw(
+        img,
+        in: CGRect(
+            x: -CGFloat(w) / 2, y: -CGFloat(h) / 2,
+            width: CGFloat(w), height: CGFloat(h)))
     guard let out = ctx.makeImage() else {
         throw ScanError("Rotation failed.")
     }
@@ -402,9 +435,12 @@ func rotated(_ img: CGImage, degreesClockwise: Int) throws -> CGImage {
 
 func toGray(_ img: CGImage, threshold: Int?) throws -> CGImage {
     let w = img.width, h = img.height
-    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-                              bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
-                              bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+    guard
+        let ctx = CGContext(
+            data: nil, width: w, height: h, bitsPerComponent: 8,
+            bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue)
+    else {
         throw ScanError("Could not allocate a greyscale context.")
     }
     ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
@@ -413,7 +449,7 @@ func toGray(_ img: CGImage, threshold: Int?) throws -> CGImage {
         guard let buf = ctx.data else { throw ScanError("No pixel buffer to threshold.") }
         let cutoff = UInt8(max(1, min(254, threshold)))
         let pixels = buf.bindMemory(to: UInt8.self, capacity: w * h)
-        for i in 0 ..< (w * h) {
+        for i in 0..<(w * h) {
             pixels[i] = pixels[i] < cutoff ? 0 : 255
         }
     }
@@ -421,15 +457,19 @@ func toGray(_ img: CGImage, threshold: Int?) throws -> CGImage {
     return out
 }
 
-func write(_ img: CGImage, to url: URL, format: OutputFormat,
-           widthMM: Double, heightMM: Double) throws {
+func write(
+    _ img: CGImage, to url: URL, format: OutputFormat,
+    widthMM: Double, heightMM: Double
+) throws {
     if format == .pdf {
         // PDF coordinates are points (1/72 inch), not scanner pixels. The
         // platen supplies the physical size even when the firmware ignores DPI.
-        var box = CGRect(x: 0, y: 0, width: widthMM / mmPerInch * 72,
-                         height: heightMM / mmPerInch * 72)
+        var box = CGRect(
+            x: 0, y: 0, width: widthMM / mmPerInch * 72,
+            height: heightMM / mmPerInch * 72)
         guard let consumer = CGDataConsumer(url: url as CFURL),
-              let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else {
+            let ctx = CGContext(consumer: consumer, mediaBox: &box, nil)
+        else {
             throw ScanError("Could not create \(url.lastPathComponent).")
         }
         ctx.beginPDFPage(nil)
@@ -461,8 +501,9 @@ func describe(_ caps: PlatenCaps) -> String {
         "Model        \(caps.makeAndModel)",
         "eSCL version \(caps.version)",
         "Sources      Platen\(caps.hasADF ? " + ADF" : " only (no document feeder)")",
-        String(format: "Max area     %.0f x %.0f mm",
-               platenMM(caps.maxWidth), platenMM(caps.maxHeight)),
+        String(
+            format: "Max area     %.0f x %.0f mm",
+            platenMM(caps.maxWidth), platenMM(caps.maxHeight)),
     ]
     func list(_ label: String, _ items: [String], _ suffix: String = "") {
         if !items.isEmpty { lines.append(label + items.joined(separator: ", ") + suffix) }
@@ -471,11 +512,15 @@ func describe(_ caps: PlatenCaps) -> String {
     list("Formats      ", caps.formats)
     list("Resolutions  ", caps.resolutions, " dpi")
     list("Intents      ", caps.intents)
-    if !caps.opticalX.isEmpty { lines.append("Optical      \(caps.opticalX) x \(caps.opticalY) dpi") }
-    lines += ["",
-              "Note: on the DCP-T420W these are claims only - the firmware",
-              "ignores the settings you send and always scans the full platen",
-              "in colour as JPEG. brscan applies the rest locally."]
+    if !caps.opticalX.isEmpty {
+        lines.append("Optical      \(caps.opticalX) x \(caps.opticalY) dpi")
+    }
+    lines += [
+        "",
+        "Note: on the DCP-T420W these are claims only - the firmware",
+        "ignores the settings you send and always scans the full platen",
+        "in colour as JPEG. brscan applies the rest locally.",
+    ]
     return lines.joined(separator: "\n")
 }
 
@@ -501,42 +546,43 @@ func parseCrop(_ spec: String) throws -> (Double, Double) {
     if let preset = cropPresets[spec.lowercased()] { return preset }
     let parts = spec.lowercased().split(separator: "x", omittingEmptySubsequences: false)
     guard parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]),
-          w.isFinite, h.isFinite, w > 0, h > 0 else {
+        w.isFinite, h.isFinite, w > 0, h > 0
+    else {
         throw ScanError("Cannot parse --crop \(spec); use a preset or positive, finite WxH in mm.")
     }
     return (w, h)
 }
 
 let usage = """
-brscan - scan from a Brother DCP-T420W over eSCL
+    brscan - scan from a Brother DCP-T420W over eSCL
 
-  brscan                                full platen, colour, PDF
-  brscan --mode gray --out receipt.pdf
-  brscan --mode lineart --rotate 180 --out doc.pdf
-  brscan --crop a6 --out photo.jpg
-  brscan --raw                          exactly what the scanner sent
+      brscan                                full platen, colour, PDF
+      brscan --mode gray --out receipt.pdf
+      brscan --mode lineart --rotate 180 --out doc.pdf
+      brscan --crop a6 --out photo.jpg
+      brscan --raw                          exactly what the scanner sent
 
-Options
-  --host HOST        scanner address (default: discover over Bonjour)
-  --port N           default 80
-  --path P           eSCL root, from the TXT rs= key (default eSCL)
-  --out FILE         default scan-<timestamp>.<ext>
-  --format F         pdf, jpeg or png (default pdf, or from --out)
-  --mode M           color, gray or lineart (default color)
-  --threshold N      black/white cutoff 1-254 for lineart (default 128)
-  --crop C           a4, letter, a5, a6, 4x6, 5x7, or WxH in mm
-  --rotate D         0, 90, 180 or 270 clockwise
-  --dpi N            requested of the device (default 300)
-  --intent I         Document, TextAndGraphic, Photo, Preview
-  --raw              save the scanner's bytes untouched
-  --caps             show what the scanner claims, and exit
-  --list             list scanners, and exit
-  --status           print scanner state, and exit
-  -v, --verbose
+    Options
+      --host HOST        scanner address (default: discover over Bonjour)
+      --port N           default 80
+      --path P           eSCL root, from the TXT rs= key (default eSCL)
+      --out FILE         default scan-<timestamp>.<ext>
+      --format F         pdf, jpeg or png (default pdf, or from --out)
+      --mode M           color, gray or lineart (default color)
+      --threshold N      black/white cutoff 1-254 for lineart (default 128)
+      --crop C           a4, letter, a5, a6, 4x6, 5x7, or WxH in mm
+      --rotate D         0, 90, 180 or 270 clockwise
+      --dpi N            requested of the device (default 300)
+      --intent I         Document, TextAndGraphic, Photo, Preview
+      --raw              save the scanner's bytes untouched
+      --caps             show what the scanner claims, and exit
+      --list             list scanners, and exit
+      --status           print scanner state, and exit
+      -v, --verbose
 
-The DCP-T420W firmware ignores eSCL scan settings, so --mode, --crop,
---rotate and --format are applied locally after the scan.
-"""
+    The DCP-T420W firmware ignores eSCL scan settings, so --mode, --crop,
+    --rotate and --format are applied locally after the scan.
+    """
 
 struct ScanOptions {
     var host: String?, outPath: String?, cropSize: (Double, Double)?
@@ -561,7 +607,8 @@ struct ScanOptions {
         func integer(_ flag: String, in range: ClosedRange<Int>) throws -> Int {
             let text = try value(flag)
             guard let n = Int(text), range.contains(n) else {
-                throw ScanError("Invalid \(flag): \(text) (expected \(range.lowerBound)-\(range.upperBound)).")
+                throw ScanError(
+                    "Invalid \(flag): \(text) (expected \(range.lowerBound)-\(range.upperBound)).")
             }
             return n
         }
@@ -585,7 +632,9 @@ struct ScanOptions {
             case "--crop": cropSize = try parseCrop(value(a))
             case "--rotate":
                 rotate = try integer(a, in: 0...270)
-                guard rotate % 90 == 0 else { throw ScanError("--rotate must be 0, 90, 180 or 270.") }
+                guard rotate % 90 == 0 else {
+                    throw ScanError("--rotate must be 0, 90, 180 or 270.")
+                }
             case "--dpi": dpi = try integer(a, in: 1...Int(Int32.max))
             case "--intent":
                 intent = try value(a)
@@ -597,7 +646,9 @@ struct ScanOptions {
             case "--list": wantList = true
             case "--status": wantStatus = true
             case "-v", "--verbose": verbose = true
-            case "-h", "--help": showHelp = true; return
+            case "-h", "--help":
+                showHelp = true
+                return
             default: throw ScanError("unknown option \(a)")
             }
         }
@@ -615,8 +666,9 @@ func savePage(_ data: Data, to url: URL, options: ScanOptions, caps: PlatenCaps)
     var widthMM = platenMM(caps.maxWidth), heightMM = platenMM(caps.maxHeight)
     if let size = options.cropSize {
         let originalWidth = img.width, originalHeight = img.height
-        img = cropped(img, widthMM: size.0, heightMM: size.1,
-                      platenWmm: widthMM, platenHmm: heightMM)
+        img = cropped(
+            img, widthMM: size.0, heightMM: size.1,
+            platenWmm: widthMM, platenHmm: heightMM)
         widthMM *= Double(img.width) / Double(originalWidth)
         heightMM *= Double(img.height) / Double(originalHeight)
         if options.verbose { err("  cropped to \(img.width)x\(img.height)px") }
@@ -642,12 +694,18 @@ func main() -> Int32 {
         err("brscan: \(error)")
         return 2
     }
-    if options.showHelp { print(usage); return 0 }
+    if options.showHelp {
+        print(usage)
+        return 0
+    }
 
     do {
         if options.wantList {
             let found = try Discovery().run(timeout: 6)
-            if found.isEmpty { print("No eSCL scanners found."); return 1 }
+            if found.isEmpty {
+                print("No eSCL scanners found.")
+                return 1
+            }
             for f in found { print("\(f.name)\n  http://\(f.host):\(f.port)/\(f.rs)") }
             return 0
         }
@@ -658,7 +716,9 @@ func main() -> Int32 {
             guard let first = found.first else {
                 throw ScanError("No eSCL scanner found. Pass --host.")
             }
-            h = first.host; p = first.port; rs = first.rs
+            h = first.host
+            p = first.port
+            rs = first.rs
             if options.verbose { err("Using \(first.name) at \(first.host):\(first.port)") }
         }
 
@@ -681,11 +741,15 @@ func main() -> Int32 {
             throw ScanError("ScannerCapabilities returned HTTP \(reply.status).")
         }
         let caps = try parseCaps(reply.data)
-        if options.wantCaps { print(describe(caps)); return 0 }
+        if options.wantCaps {
+            print(describe(caps))
+            return 0
+        }
 
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let defaultName = "scan-\(stamp.string(from: Date()))."
+        let defaultName =
+            "scan-\(stamp.string(from: Date()))."
             + (options.raw ? "jpg" : options.outputFormat.ext)
         let baseName = options.outPath ?? defaultName
 
@@ -695,24 +759,28 @@ func main() -> Int32 {
         }
 
         let mime = options.outputFormat == .pdf ? "application/pdf" : "image/jpeg"
-        let settings = scanSettings(version: caps.version, mode: options.mode, mime: mime,
-                                    dpi: options.dpi, intent: options.intent,
-                                    width: caps.maxWidth, height: caps.maxHeight)
+        let settings = scanSettings(
+            version: caps.version, mode: options.mode, mime: mime,
+            dpi: options.dpi, intent: options.intent,
+            width: caps.maxWidth, height: caps.maxHeight)
         if options.verbose { err(String(data: settings, encoding: .utf8) ?? "") }
 
         err("Scanning...")
         let started = Date()
         let pages = try runScan(base: base, settings: settings, verbose: options.verbose)
-        err(String(format: "Scanner returned %d page(s) in %.1fs",
-                   pages.count, Date().timeIntervalSince(started)))
+        err(
+            String(
+                format: "Scanner returned %d page(s) in %.1fs",
+                pages.count, Date().timeIntervalSince(started)))
 
         for (i, data) in pages.enumerated() {
             let name = pageName(baseName, index: i)
             let url = URL(fileURLWithPath: name)
             try savePage(data, to: url, options: options, caps: caps)
 
-            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]
-                        as? Int) ?? 0
+            let size =
+                (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]
+                    as? Int) ?? 0
             print("Wrote \(name) (\(size / 1024) KB)")
         }
         return 0

@@ -22,7 +22,7 @@ QUEUE="Brother_DCP_T420W"
 PLIST="/Library/LaunchDaemons/com.hwisu.dcp-t420w.airprint.plist"
 LOG="/var/log/install.log"
 
-log() { echo "brother-dcp-t420w: $1" | tee -a "$LOG" >/dev/null 2>&1; }
+log() { echo "brother-dcp-t420w: $1" | /usr/bin/tee -a "$LOG" >/dev/null 2>&1; }
 
 /usr/sbin/cupsctl --share-printers >>"$LOG" 2>&1 || log "cupsctl failed"
 

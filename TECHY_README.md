@@ -151,7 +151,7 @@ certificate. Gatekeeper will refuse a plain double-click, so either
 **right-click the `.pkg` → Open**, or:
 
 ```sh
-sudo installer -pkg DCP-T420W-1.5.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.5.1.pkg -target /
 ```
 
 Everything inside is a universal binary (arm64 + x86_64) with no runtime
@@ -165,10 +165,9 @@ To build the package yourself:
 
 ### From source instead
 
-Build requirements are Xcode (or Command Line Tools) with a Swift 6 compiler,
-the macOS SDK, and Python 3 for the PPD generator and tests. Python is not a
-runtime dependency of the packaged driver, and there are no third-party
-packages or package-manager dependencies to update. CUPS, Bonjour, ImageIO,
+Build requirements are Xcode (or Command Line Tools) with a Swift 6 compiler
+and the macOS SDK. There are no third-party packages, Python scripts, or
+package-manager dependencies to update. CUPS, Bonjour, ImageIO,
 and the other runtime frameworks are supplied and updated by macOS.
 
 The builds select the macOS SDK and compiler through `xcrun`; see
@@ -264,7 +263,7 @@ cat > /tmp/sharing.plist <<'EOF'
 </dict></array></plist>
 EOF
 
-sudo installer -pkg DCP-T420W-1.5.0.pkg \
+sudo installer -pkg DCP-T420W-1.5.1.pkg \
      -applyChoiceChangesXML /tmp/sharing.plist -target /
 ```
 
@@ -427,8 +426,8 @@ should rely on.
 The Python client has since been removed. It was never truly portable — it
 depended on macOS's `sips` and `dns-sd` — and this project targets macOS only.
 
-**Everything else is Python or shell, and never ships.** `scripts/genppd.py`
-generates the PPD, `test/pwgdump.py` and `test/pwg2png.py` decode PWG Raster for
+**Everything else is Swift or shell, and never ships.** `scripts/genppd.swift`
+generates the PPD, `test/pwgdump.swift` and `test/pwg2png.swift` decode PWG Raster for
 verification, `install.sh` and `packaging/build-pkg.sh` build and install. These
 are development tools that run on your machine, not runtime dependencies of the
 driver.
@@ -533,11 +532,12 @@ packaging/build-pkg.sh     builds the double-clickable installer
 packaging/scripts/         pkg pre/postinstall (creates the print queue)
 packaging/scripts-sharing/ postinstall for the optional sharing component
 packaging/launchd/         the brairprint LaunchDaemon plist
-scripts/genppd.py          builds the PPD from the printer's own attributes
+scripts/genppd.swift       builds the PPD from the printer's own attributes
 scripts/probe.sh           dumps a printer's IPP capabilities
-test/make_testpage.py      generates the A4 test page
-test/pwgdump.py            decodes PWG Raster page headers
-test/pwg2png.py            decodes a PWG stream back to PNG
+test/make_testpage.swift   generates the A4 test page
+test/pwgdump.swift         decodes PWG Raster page headers
+test/pwg2png.swift         decodes a PWG stream back to PNG
+test/Runner.swift          offline Swift test runner and regression suites
 install.sh, uninstall.sh
 PITFALLS.md                everything that bites, printing and scanning
 ```
@@ -549,11 +549,15 @@ syntax checks together:
 
 ```sh
 make check
+make lint
 ```
 
-`PYTHON=/path/to/python3 make check` selects a different Python interpreter.
-The build has been checked with Apple Swift 6.4, Apple Clang 21, and Python
-3.14.6; the minimum macOS 11 deployment target is retained. Building with that
+`make lint` runs strict Clang/Swift compiler checks, the Clang static
+analyzer, and formatting verification using `.clang-format`, `.swift-format`,
+and `.editorconfig` (plus `shellcheck` if installed). `make format` applies
+the C and Swift formatters in place.
+The build has been checked with Apple Swift 6.4 and Apple Clang 21;
+the minimum macOS 11 deployment target is retained. Building with that
 target does not substitute for runtime testing on macOS 11.
 
 It checks raster padding, colour conversion and malformed geometry, plus
@@ -604,13 +608,14 @@ and the [PWG Raster client requirements, section 6.4](https://ftp.pwg.org/pub/pw
 The driver was checked without printing, by decoding its own output:
 
 ```sh
-python3 test/make_testpage.py > test/testpage-a4.pdf
+make tools
+./build/make_testpage > test/testpage-a4.pdf
 PPD=ppd/Brother-DCP-T420W.ppd /usr/libexec/cups/filter/cgpdftoraster \
     1 me test 1 "" test/testpage-a4.pdf > /tmp/page.cups
 PPD=ppd/Brother-DCP-T420W.ppd ./filter/rastertobrother \
     1 me test 1 "" < /tmp/page.cups > /tmp/page.pwg
-python3 test/pwgdump.py /tmp/page.pwg          # header fields
-python3 test/pwg2png.py /tmp/page.pwg /tmp/page.png --scale 7
+./build/pwgdump /tmp/page.pwg          # header fields
+./build/pwg2png /tmp/page.pwg /tmp/page.png --scale 7
 ```
 
 Confirmed: A4 at 600 dpi decodes to 4961×7016 `srgb_8` with every row
@@ -626,7 +631,7 @@ it back to an image.
 
 ## Adapting to a sibling model
 
-Run `scripts/probe.sh` against the other printer, update the `MEDIA` table and
-margin constants in `scripts/genppd.py` to match what it reports, regenerate,
+Run `scripts/probe.sh` against the other printer, update the `media` table and
+margin constants in `scripts/genppd.swift` to match what it reports, regenerate,
 and reinstall. Any Brother that lists `image/pwg-raster` in
 `document-format-supported` should work the same way.

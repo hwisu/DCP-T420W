@@ -87,7 +87,7 @@ macOS에서 차단될 수 있습니다. 이 저장소의 파일을 신뢰하는 
 Gatekeeper를 시스템 전체에서 해제할 필요는 없습니다.
 
 ```sh
-sudo installer -pkg DCP-T420W-1.5.0.pkg -target /
+sudo installer -pkg DCP-T420W-1.5.1.pkg -target /
 ```
 
 명령줄 설치는 공유 선택 화면을 표시하지 않습니다. 공유를 켜는 명령줄 설치 예시는
@@ -108,14 +108,14 @@ PPD는 CUPS가 `/etc/cups/ppd/` 아래에도 따로 복사합니다. 모델 파�
 
 ## 빌드와 소스 설치
 
-Xcode 또는 Command Line Tools, Swift 6 컴파일러, macOS SDK, Python 3가 필요합니다.
-Python은 PPD 생성·테스트용이며 배포 실행 파일의 의존성이 아닙니다.
+Xcode 또는 Command Line Tools(Swift 6 컴파일러·macOS SDK 포함)만 있으면 되며
+별도 Python이나 외부 패키지 의존성은 없습니다.
 런타임은 macOS의 CUPS·Bonjour·ImageIO 등을 사용합니다.
 
 ```sh
 make
 make check
-./packaging/build-pkg.sh              # build/DCP-T420W-1.5.0.pkg
+./packaging/build-pkg.sh              # build/DCP-T420W-1.5.1.pkg
 sudo ./install.sh                    # 인쇄 드라이버 설치
 sudo make -C scanner install          # brscan 별도 설치
 ```
@@ -164,7 +164,7 @@ PPD의 필터 경로는 다음 두 가지입니다.
 ### 인쇄 옵션과 제약
 
 - A4, Letter, Legal, A5, A6, 사진 용지·봉투 등과 사용자 지정 크기를 지원합니다.
-  전체 목록과 물리 치수는 `scripts/genppd.py`의 `MEDIA`를 확인하세요.
+  전체 목록과 물리 치수는 `scripts/genppd.swift`의 `media`를 확인하세요.
 - 사용자 지정 크기는 88.9×127mm부터 215.9×355.6mm까지입니다.
 - 일반 용지 여백은 3mm, 봉투 상하 여백은 12mm입니다. 여백 없는 크기는 인화지와
   함께 사용해야 하며 일반 용지 조합은 거부합니다.
@@ -293,11 +293,14 @@ PDF 크기는 요청 DPI가 아닌 실제 스캔 영역을 기준으로 기록�
 
 ```sh
 make check
+make lint
 ```
 
-빌드, 자동 회귀 검사, PPD 재생성 일치 검사, `cupstestppd`, 셸 구문 검사를 실행합니다.
-Python 선택은 `PYTHON=/path/to/python3 make check`로 지정할 수 있습니다.
-기존 빌드 검증 환경은 Apple Swift 6.4, Apple Clang 21, Python 3.14.6입니다.
+`make check`는 빌드, 자동 회귀 검사, PPD 재생성 일치 검사, `cupstestppd`, plist/XML 검증,
+셸 구문 검사를 실행합니다. `make lint`는 엄격한 Clang/Swift 컴파일 경고 검사,
+Clang 정적 분석, 포맷 검사(`xcrun clang-format`, `xcrun swift-format`)를 수행하며
+`make format`으로 코드를 자동 정리할 수 있습니다.
+기존 빌드 검증 환경은 Apple Swift 6.4, Apple Clang 21입니다.
 
 검사 범위는 다음과 같습니다.
 
@@ -346,7 +349,7 @@ sudo pkgutil --forget com.hwisu.dcp-t420w.sharing
 | 파일·폴더 | 역할 |
 |---|---|
 | `filter/rastertobrother.c` | CUPS 필터, libcups 사용 |
-| `scripts/genppd.py` | PPD 생성 원본, 용지·옵션·기본값 |
+| `scripts/genppd.swift` | PPD 생성 원본, 용지·옵션·기본값 |
 | `ppd/Brother-DCP-T420W.ppd` | 생성 결과, 직접 수정 대신 생성기 수정 |
 | `scanner/brscan.swift` | 스캔 도구 |
 | `airprint/brairprint.c` | AirPrint 알림 |
@@ -356,4 +359,4 @@ sudo pkgutil --forget com.hwisu.dcp-t420w.sharing
 | `PITFALLS.md` | 실측한 기기 특성·주의사항 상세 기록 |
 
 다른 모델은 먼저 `scripts/probe.sh`로 PWG Raster 지원, 용지·여백·품질 정보를 확인하고
-생성기의 `MEDIA`와 관련 상수를 수정해야 합니다. 비슷한 모델명만으로 호환을 단정하지 마세요.
+생성기의 `media`와 관련 상수를 수정해야 합니다. 비슷한 모델명만으로 호환을 단정하지 마세요.

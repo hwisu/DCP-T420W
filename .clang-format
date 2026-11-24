@@ -1,0 +1,17 @@
+---
+Language: C
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 100
+BreakBeforeBraces: Allman
+AlwaysBreakAfterReturnType: AllDefinitions
+PointerAlignment: Right
+SortIncludes: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+IndentCaseLabels: false
+UseTab: Never
+ReflowComments: false
+AlignTrailingComments: false
+...

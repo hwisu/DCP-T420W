@@ -40,11 +40,11 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 
-#define MODEL_SHORT   "DCP-T420W"
-#define MODEL_NAME    "Brother " MODEL_SHORT
+#define MODEL_SHORT "DCP-T420W"
+#define MODEL_NAME "Brother " MODEL_SHORT
 #define DEFAULT_QUEUE "Brother_DCP_T420W"
-#define DEFAULT_NAME  MODEL_NAME " (AirPrint)"
-#define DEFAULT_PORT  631
+#define DEFAULT_NAME MODEL_NAME " (AirPrint)"
+#define DEFAULT_PORT 631
 
 /*
  * What the printer can actually do, in URF's vocabulary (PWG 5100.14):
@@ -91,36 +91,34 @@ on_signal(int sig)
 static int
 printer_uuid(const char *queue, int port, char *buf, size_t bufsize)
 {
-  http_t		*http;
-  ipp_t			*request, *response;
-  ipp_attribute_t	*attr;
-  char			uri[1024];
-  int			found = 0;
-  static const char * const requested[] = { "printer-uuid" };
+  http_t *http;
+  ipp_t *request, *response;
+  ipp_attribute_t *attr;
+  char uri[1024];
+  int found = 0;
+  static const char *const requested[] = {"printer-uuid"};
 
-  if ((http = httpConnect2("localhost", port, NULL, AF_UNSPEC,
-                           HTTP_ENCRYPTION_IF_REQUESTED, 1, 5000, NULL)) == NULL)
+  if ((http = httpConnect2("localhost", port, NULL, AF_UNSPEC, HTTP_ENCRYPTION_IF_REQUESTED, 1,
+                           5000, NULL)) == NULL)
     return 0;
 
-  httpAssembleURIf(HTTP_URI_CODING_ALL, uri, sizeof(uri), "ipp", NULL,
-                   "localhost", port, "/printers/%s", queue);
+  httpAssembleURIf(HTTP_URI_CODING_ALL, uri, sizeof(uri), "ipp", NULL, "localhost", port,
+                   "/printers/%s", queue);
 
   request = ippNewRequest(IPP_OP_GET_PRINTER_ATTRIBUTES);
-  ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_URI,
-               "printer-uri", NULL, uri);
-  ippAddStrings(request, IPP_TAG_OPERATION, IPP_TAG_KEYWORD,
-                "requested-attributes", 1, NULL, requested);
+  ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_URI, "printer-uri", NULL, uri);
+  ippAddStrings(request, IPP_TAG_OPERATION, IPP_TAG_KEYWORD, "requested-attributes", 1, NULL,
+                requested);
 
   response = cupsDoRequest(http, request, "/");
 
-  if (response != NULL &&
-      (attr = ippFindAttribute(response, "printer-uuid", IPP_TAG_URI)) != NULL)
+  if (response != NULL && (attr = ippFindAttribute(response, "printer-uuid", IPP_TAG_URI)) != NULL)
   {
     const char *value = ippGetString(attr, 0, NULL);
 
     if (value != NULL)
     {
-     /* CUPS reports urn:uuid:xxxx; the TXT record carries the bare form. */
+      /* CUPS reports urn:uuid:xxxx; the TXT record carries the bare form. */
       if (!strncmp(value, "urn:uuid:", 9))
         value += 9;
 
@@ -141,28 +139,26 @@ printer_uuid(const char *queue, int port, char *buf, size_t bufsize)
  * refused rather than silently truncated.
  */
 static int
-build_txt(TXTRecordRef *txt, const char * const pairs[][2], size_t count)
+build_txt(TXTRecordRef *txt, const char *const pairs[][2], size_t count)
 {
-  size_t	i;
+  size_t i;
 
   TXTRecordCreate(txt, 0, NULL);
 
-  for (i = 0; i < count; i ++)
+  for (i = 0; i < count; i++)
   {
-    const char		*key = pairs[i][0], *value = pairs[i][1];
-    size_t		len = strlen(value);
-    DNSServiceErrorType	err;
+    const char *key = pairs[i][0], *value = pairs[i][1];
+    size_t len = strlen(value);
+    DNSServiceErrorType err;
 
     if (len > 255)
     {
-      fprintf(stderr, "ERROR: TXT value for %s is too long (%zu bytes).\n",
-              key, len);
+      fprintf(stderr, "ERROR: TXT value for %s is too long (%zu bytes).\n", key, len);
       TXTRecordDeallocate(txt);
       return 0;
     }
 
-    if ((err = TXTRecordSetValue(txt, key, (uint8_t)len, value))
-            != kDNSServiceErr_NoError)
+    if ((err = TXTRecordSetValue(txt, key, (uint8_t)len, value)) != kDNSServiceErr_NoError)
     {
       fprintf(stderr, "ERROR: cannot set TXT key %s (%d).\n", key, (int)err);
       TXTRecordDeallocate(txt);
@@ -174,10 +170,14 @@ build_txt(TXTRecordRef *txt, const char * const pairs[][2], size_t count)
 }
 
 static void DNSSD_API
-on_register(DNSServiceRef ref, DNSServiceFlags flags, DNSServiceErrorType err,
-            const char *name, const char *type, const char *domain, void *ctx)
+on_register(DNSServiceRef ref, DNSServiceFlags flags, DNSServiceErrorType err, const char *name,
+            const char *type, const char *domain, void *ctx)
 {
-  (void)ref; (void)flags; (void)type; (void)domain; (void)ctx;
+  (void)ref;
+  (void)flags;
+  (void)type;
+  (void)domain;
+  (void)ctx;
 
   if (err == kDNSServiceErr_NoError)
     fprintf(stderr, "INFO: registered \"%s\" for AirPrint.\n", name);
@@ -188,29 +188,29 @@ on_register(DNSServiceRef ref, DNSServiceFlags flags, DNSServiceErrorType err,
 int
 main(int argc, char *argv[])
 {
-  const char	*queue = DEFAULT_QUEUE;
-  const char	*name  = DEFAULT_NAME;
-  int		port   = DEFAULT_PORT;
-  char		uuid[64] = "";
-  char		hostname[256];
-  char		rp[512], adminurl[1024];
-  TXTRecordRef	txt;
-  DNSServiceRef	ref = NULL;
-  DNSServiceErrorType	err;
-  int		fd, i;
+  const char *queue = DEFAULT_QUEUE;
+  const char *name = DEFAULT_NAME;
+  int port = DEFAULT_PORT;
+  char uuid[64] = "";
+  char hostname[256];
+  char rp[512], adminurl[1024];
+  TXTRecordRef txt;
+  DNSServiceRef ref = NULL;
+  DNSServiceErrorType err;
+  int fd, i;
 
-  for (i = 1; i < argc; i ++)
+  for (i = 1; i < argc; i++)
   {
     if (!strcmp(argv[i], "--queue") && i + 1 < argc)
-      queue = argv[++ i];
+      queue = argv[++i];
     else if (!strcmp(argv[i], "--name") && i + 1 < argc)
-      name = argv[++ i];
+      name = argv[++i];
     else if (!strcmp(argv[i], "--port"))
     {
-      char	*end;
-      long	value;
+      char *end;
+      long value;
 
-      if (++ i >= argc)
+      if (++i >= argc)
       {
         fputs("ERROR: --port requires a value.\n", stderr);
         return 2;
@@ -219,8 +219,7 @@ main(int argc, char *argv[])
       errno = 0;
       value = strtol(argv[i], &end, 10);
 
-      if (errno == ERANGE || *argv[i] == '\0' || *end != '\0' ||
-          value < 1 || value > 65535)
+      if (errno == ERANGE || *argv[i] == '\0' || *end != '\0' || value < 1 || value > 65535)
       {
         fprintf(stderr, "ERROR: invalid port %s (expected 1-65535).\n", argv[i]);
         return 2;
@@ -244,7 +243,7 @@ main(int argc, char *argv[])
   signal(SIGINT, on_signal);
   signal(SIGPIPE, SIG_IGN);
 
- /*
+  /*
   * Wait for the queue rather than exiting and letting launchd respawn us in a
   * tight loop. At boot cupsd is usually a few seconds behind us.
   */
@@ -268,39 +267,35 @@ main(int argc, char *argv[])
     strlcpy(hostname, "localhost", sizeof(hostname));
 
   snprintf(rp, sizeof(rp), "printers/%s", queue);
-  snprintf(adminurl, sizeof(adminurl), "http://%s:%d/printers/%s",
-           hostname, port, queue);
+  snprintf(adminurl, sizeof(adminurl), "http://%s:%d/printers/%s", hostname, port, queue);
 
-  const char * const txt_pairs[][2] =
-  {
-    { "txtvers",  "1" },
-    { "qtotal",   "1" },
-    { "rp",       rp },
-    { "ty",       MODEL_NAME },
-    { "product",  "(" MODEL_SHORT ")" },
-    { "note",     "" },
-    { "priority", "0" },
-    { "adminurl", adminurl },
-    { "pdl",      PDL_SUPPORTED },
-    { "URF",      URF_SUPPORTED },
-    { "Color",    "T" },
-    { "Duplex",   "F" },
-    { "Scan",     "F" },
-    { "UUID",     uuid },
+  const char *const txt_pairs[][2] = {
+      {"txtvers", "1"},
+      {"qtotal", "1"},
+      {"rp", rp},
+      {"ty", MODEL_NAME},
+      {"product", "(" MODEL_SHORT ")"},
+      {"note", ""},
+      {"priority", "0"},
+      {"adminurl", adminurl},
+      {"pdl", PDL_SUPPORTED},
+      {"URF", URF_SUPPORTED},
+      {"Color", "T"},
+      {"Duplex", "F"},
+      {"Scan", "F"},
+      {"UUID", uuid},
   };
 
   if (!build_txt(&txt, txt_pairs, sizeof(txt_pairs) / sizeof(txt_pairs[0])))
     return 1;
 
- /*
+  /*
   * The ",_universal" suffix is the part iOS is actually browsing for. Without
   * it the record is published and never looked at.
   */
-  err = DNSServiceRegister(&ref, 0, kDNSServiceInterfaceIndexAny,
-                           name, "_ipp._tcp,_universal", NULL, NULL,
-                           htons((uint16_t)port),
-                           TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt),
-                           on_register, NULL);
+  err = DNSServiceRegister(&ref, 0, kDNSServiceInterfaceIndexAny, name, "_ipp._tcp,_universal",
+                           NULL, NULL, htons((uint16_t)port), TXTRecordGetLength(&txt),
+                           TXTRecordGetBytesPtr(&txt), on_register, NULL);
 
   TXTRecordDeallocate(&txt);
 
@@ -321,9 +316,9 @@ main(int argc, char *argv[])
 
   while (!stop_requested)
   {
-    fd_set		input;
-    struct timeval	timeout = { 1, 0 };
-    int			ready;
+    fd_set input;
+    struct timeval timeout = {1, 0};
+    int ready;
 
     FD_ZERO(&input);
     FD_SET(fd, &input);

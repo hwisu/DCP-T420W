@@ -18,6 +18,7 @@ BUILD_FLAGS = -sdk "$(SDK)" -module-cache-path "$(MODULE_CACHE)"
 all: $(TARGET)
 
 $(TARGET): brscan.swift Makefile
+	mkdir -p "$(MODULE_CACHE)"
 	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target arm64-apple-macos$(MIN_OS)  $< -o $@-arm64
 	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target x86_64-apple-macos$(MIN_OS) $< -o $@-x86_64
 	xcrun lipo -create -output $@ $@-arm64 $@-x86_64
@@ -25,6 +26,7 @@ $(TARGET): brscan.swift Makefile
 
 # Single-architecture build for the machine you are on.
 native: brscan.swift
+	mkdir -p "$(MODULE_CACHE)"
 	$(SWIFTC) $(SWIFTFLAGS) $(BUILD_FLAGS) -target $(NATIVE_ARCH)-apple-macos$(MIN_OS) $< -o $(TARGET)
 
 install: $(TARGET)

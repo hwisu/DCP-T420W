@@ -45,15 +45,16 @@ fi
 
 say() { printf '  %s\n' "$1"; }
 
+build() {
+  make -C "$HERE/$1" >/dev/null || make -C "$HERE/$1" native >/dev/null
+}
+
 echo "Brother DCP-T420W driver installer"
 
 # ---------------------------------------------------------------------------
 # 1. Filter
 # ---------------------------------------------------------------------------
-if [ ! -x "$HERE/filter/rastertobrother" ]; then
-  say "Building rastertobrother..."
-  make -C "$HERE/filter" >/dev/null || make -C "$HERE/filter" native >/dev/null
-fi
+build filter
 
 install -o root -g wheel -m 0755 \
         "$HERE/filter/rastertobrother" "$FILTER_DIR/rastertobrother"
@@ -76,10 +77,7 @@ fi
 # 3. AirPrint advertiser
 # ---------------------------------------------------------------------------
 # Installed either way; it only does anything once --share loads the daemon.
-if [ ! -x "$HERE/airprint/brairprint" ]; then
-  say "Building brairprint..."
-  make -C "$HERE/airprint" >/dev/null || make -C "$HERE/airprint" native >/dev/null
-fi
+build airprint
 
 install -d -o root -g wheel -m 0755 /usr/local/libexec
 install -o root -g wheel -m 0755 \

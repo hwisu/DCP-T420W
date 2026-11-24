@@ -14,34 +14,7 @@ import sys
 import zlib
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from pwgdump import HEADER_LEN, parse_header  # noqa: E402
-
-
-def decode_page(data, off, h):
-    """Return (rows, off) where rows is a list of bytes objects."""
-    width, height = h["cupsWidth"], h["cupsHeight"]
-    bpp = h["cupsBitsPerPixel"] // 8
-    line_len = h["cupsBytesPerLine"]
-    rows = []
-
-    while len(rows) < height:
-        repeat = data[off] + 1
-        off += 1
-        line = bytearray()
-        while len(line) < line_len:
-            ctrl = data[off]
-            off += 1
-            if ctrl < 128:
-                line += data[off:off + bpp] * (ctrl + 1)
-                off += bpp
-            else:
-                n = 257 - ctrl
-                line += data[off:off + n * bpp]
-                off += n * bpp
-        line = bytes(line[:line_len])
-        rows.extend([line] * min(repeat, height - len(rows)))
-
-    return rows, off
+from pwgdump import HEADER_LEN, decode_page, parse_header  # noqa: E402
 
 
 def write_png(path, rows, width, height, bpp, scale=1):
@@ -88,16 +61,13 @@ def main(argv):
     rows, _off = decode_page(data, 4 + HEADER_LEN, h)
     bpp = h["cupsBitsPerPixel"] // 8
 
-    if len(rows) != h["cupsHeight"]:
-        raise SystemExit(f"decoded {len(rows)} rows, header says {h['cupsHeight']}")
-    bad = [i for i, r in enumerate(rows) if len(r) != h["cupsBytesPerLine"]]
-    if bad:
-        raise SystemExit(f"{len(bad)} row(s) have the wrong length, first at {bad[0]}")
-
     w, ht = write_png(dst, rows, h["cupsWidth"], h["cupsHeight"], bpp, scale)
     print(f"{src}: {h['cupsWidth']}x{h['cupsHeight']} "
           f"{'grey' if bpp == 1 else 'rgb'} -> {dst} ({w}x{ht}), all rows well-formed")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except ValueError as exc:
+        sys.exit(str(exc))

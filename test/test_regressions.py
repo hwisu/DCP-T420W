@@ -22,7 +22,7 @@ import tempfile
 import threading
 import unittest
 
-from pwgdump import FIELDS, HEADER_LEN, parse_header
+from pwgdump import FIELDS, HEADER_LEN, headers, parse_header
 from pwg2png import decode_page, write_png
 
 
@@ -71,6 +71,33 @@ def pdf_page_size(path):
         page = objects[parent[1]]
     x0, y0, x1, y1 = map(float, box[1].split())
     return x1 - x0, y1 - y0
+
+
+class PWGToolTests(unittest.TestCase):
+    def test_white_fill_and_page_boundaries(self):
+        # First page: two copies of a row that turns white after one RGB pixel.
+        # Second page: two entirely white rows, with no pixel payload.
+        header = raster()[4:4 + HEADER_LEN]
+        first = header + b"\x01\x00\x12\x34\x56\x80"
+        second = header + b"\x01\x80"
+        data = b"RaS2" + first + second
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "two-pages.pwg"
+            path.write_bytes(data)
+            pages = headers(path)
+            self.assertEqual(len(pages), 2)
+            rows, end = decode_page(data, 4 + HEADER_LEN, pages[0][0])
+            self.assertEqual(rows, [b"\x12\x34\x56\xff\xff\xff"] * 2)
+            self.assertEqual(end, 4 + len(first))
+            rows, end = decode_page(data, end + HEADER_LEN, pages[1][0])
+            self.assertEqual(rows, [b"\xff" * 6] * 2)
+            self.assertEqual(end, len(data))
+
+    def test_truncated_packets(self):
+        header = parse_header(raster()[4:4 + HEADER_LEN])
+        for band in (b"", b"\x01", b"\x01\x01\x12", b"\x01\xff\x12\x34\x56"):
+            with self.subTest(band=band), self.assertRaises(ValueError):
+                decode_page(band, 0, header)
 
 
 class RasterTests(unittest.TestCase):
@@ -419,7 +446,7 @@ class ScannerTests(unittest.TestCase):
                  ["--dpi", "0"], ["--dpi", "oops"], ["--rotate", "45"],
                  ["--threshold", "255"], ["--crop", "nanx10"],
                  ["--crop", "infx10"], ["--crop", "0x10"],
-                 ["--crop", "bad"], ["--intent", "bad"],
+                 ["--crop", "bad"], ["--intent", "bad"], ["--format", "bad"], ["--mode", "bad"],
                  ["--out"], ["--host"], ["--path"], ["--crop"], ["--dpi"]]
         for client in CLIENTS:
             for args in cases:
@@ -503,6 +530,14 @@ class ScannerTests(unittest.TestCase):
                         self.assertEqual(output.read_bytes(), b"page 1")
                         self.assertEqual((Path(tmp) / second_name).read_bytes(), b"page 2")
                         self.assertIn(("DELETE", "/eSCL/ScanJobs/job"), requests)
+
+    def test_native_pdf_passthrough(self):
+        pdf = (ROOT / "test/testpage-a4.pdf").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp, scanner_server([(200, pdf)]) as (port, _):
+            output = Path(tmp) / "scan.pdf"
+            result = self.run_client([SCANNER], port, output, "--rotate", "90")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_bytes(), pdf)
 
     def test_native_image_processing(self):
         with tempfile.TemporaryDirectory() as tmp:

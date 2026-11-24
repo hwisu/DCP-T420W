@@ -538,34 +538,35 @@ The DCP-T420W firmware ignores eSCL scan settings, so --mode, --crop,
 --rotate and --format are applied locally after the scan.
 """
 
-func main() -> Int32 {
-    // Install signal sources before discovery or creating a scanner job.
-    _ = cancellation
-    var args = Array(CommandLine.arguments.dropFirst())
+struct ScanOptions {
     var host: String?, outPath: String?, cropSize: (Double, Double)?
     var port = 80, path = "eSCL", dpi = 300, rotate = 0, threshold = 128
     var mode = ColorMode.color, format: OutputFormat?, intent = "Document"
     var raw = false, wantCaps = false, wantList = false, wantStatus = false
-    var verbose = false
+    var verbose = false, showHelp = false
 
-    func value(_ flag: String) throws -> String {
-        guard let next = args.first, !next.isEmpty, !next.hasPrefix("--") else {
-            throw ScanError("\(flag) requires a value.")
-        }
-        return args.removeFirst()
+    var outputFormat: OutputFormat {
+        format ?? outPath.flatMap(inferredFormat(of:)) ?? .pdf
     }
 
-    func integer(_ flag: String, in range: ClosedRange<Int>) throws -> Int {
-        let text = try value(flag)
-        guard let n = Int(text), range.contains(n) else {
-            throw ScanError("Invalid \(flag): \(text) (expected \(range.lowerBound)-\(range.upperBound)).")
+    init(_ arguments: ArraySlice<String>) throws {
+        var args = arguments
+        func value(_ flag: String) throws -> String {
+            guard let next = args.popFirst(), !next.isEmpty, !next.hasPrefix("--") else {
+                throw ScanError("\(flag) requires a value.")
+            }
+            return next
         }
-        return n
-    }
 
-    do {
-        while !args.isEmpty {
-            let a = args.removeFirst()
+        func integer(_ flag: String, in range: ClosedRange<Int>) throws -> Int {
+            let text = try value(flag)
+            guard let n = Int(text), range.contains(n) else {
+                throw ScanError("Invalid \(flag): \(text) (expected \(range.lowerBound)-\(range.upperBound)).")
+            }
+            return n
+        }
+
+        while let a = args.popFirst() {
             switch a {
             case "--host": host = try value(a)
             case "--port": port = try integer(a, in: 1...65535)
@@ -574,11 +575,11 @@ func main() -> Int32 {
             case "--format":
                 let v = try value(a)
                 guard let f = OutputFormat(rawValue: v == "jpg" ? "jpeg" : v)
-                else { err("brscan: bad --format"); return 2 }
+                else { throw ScanError("bad --format") }
                 format = f
             case "--mode":
                 guard let m = ColorMode(rawValue: try value(a))
-                else { err("brscan: bad --mode"); return 2 }
+                else { throw ScanError("bad --mode") }
                 mode = m
             case "--threshold": threshold = try integer(a, in: 1...254)
             case "--crop": cropSize = try parseCrop(value(a))
@@ -596,31 +597,69 @@ func main() -> Int32 {
             case "--list": wantList = true
             case "--status": wantStatus = true
             case "-v", "--verbose": verbose = true
-            case "-h", "--help": print(usage); return 0
-            default: err("brscan: unknown option \(a)"); return 2
+            case "-h", "--help": showHelp = true; return
+            default: throw ScanError("unknown option \(a)")
             }
         }
+    }
+}
+
+func savePage(_ data: Data, to url: URL, options: ScanOptions, caps: PlatenCaps) throws {
+    try cancellation.check()
+    if options.raw || data.starts(with: "%PDF".utf8) {
+        try data.write(to: url)
+        return
+    }
+
+    var img = try loadImage(data)
+    var widthMM = platenMM(caps.maxWidth), heightMM = platenMM(caps.maxHeight)
+    if let size = options.cropSize {
+        let originalWidth = img.width, originalHeight = img.height
+        img = cropped(img, widthMM: size.0, heightMM: size.1,
+                      platenWmm: widthMM, platenHmm: heightMM)
+        widthMM *= Double(img.width) / Double(originalWidth)
+        heightMM *= Double(img.height) / Double(originalHeight)
+        if options.verbose { err("  cropped to \(img.width)x\(img.height)px") }
+    }
+    if options.rotate != 0 { img = try rotated(img, degreesClockwise: options.rotate) }
+    if options.rotate == 90 || options.rotate == 270 { swap(&widthMM, &heightMM) }
+    switch options.mode {
+    case .color: break
+    case .gray: img = try toGray(img, threshold: nil)
+    case .lineart: img = try toGray(img, threshold: options.threshold)
+    }
+    try cancellation.check()
+    try write(img, to: url, format: options.outputFormat, widthMM: widthMM, heightMM: heightMM)
+}
+
+func main() -> Int32 {
+    // Install signal sources before discovery or creating a scanner job.
+    _ = cancellation
+    let options: ScanOptions
+    do {
+        options = try ScanOptions(CommandLine.arguments.dropFirst())
     } catch {
         err("brscan: \(error)")
         return 2
     }
+    if options.showHelp { print(usage); return 0 }
 
     do {
-        if wantList {
+        if options.wantList {
             let found = try Discovery().run(timeout: 6)
             if found.isEmpty { print("No eSCL scanners found."); return 1 }
             for f in found { print("\(f.name)\n  http://\(f.host):\(f.port)/\(f.rs)") }
             return 0
         }
 
-        var h = host, p = port, rs = path
+        var h = options.host, p = options.port, rs = options.path
         if h == nil {
             let found = try Discovery().run(timeout: 6)
             guard let first = found.first else {
                 throw ScanError("No eSCL scanner found. Pass --host.")
             }
             h = first.host; p = first.port; rs = first.rs
-            if verbose { err("Using \(first.name) at \(first.host):\(first.port)") }
+            if options.verbose { err("Using \(first.name) at \(first.host):\(first.port)") }
         }
 
         var comps = URLComponents()
@@ -630,7 +669,7 @@ func main() -> Int32 {
         comps.path = "/" + rs.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let base = comps.url else { throw ScanError("Bad scanner address.") }
 
-        if wantStatus {
+        if options.wantStatus {
             let state = scannerState(base: base)
             try cancellation.check()
             print(state)
@@ -642,66 +681,35 @@ func main() -> Int32 {
             throw ScanError("ScannerCapabilities returned HTTP \(reply.status).")
         }
         let caps = try parseCaps(reply.data)
-        if wantCaps { print(describe(caps)); return 0 }
-
-        let outFormat = format ?? outPath.flatMap(inferredFormat(of:)) ?? .pdf
+        if options.wantCaps { print(describe(caps)); return 0 }
 
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let defaultName = "scan-\(stamp.string(from: Date()))."
-            + (raw ? "jpg" : outFormat.ext)
-        let base0 = outPath ?? defaultName
+            + (options.raw ? "jpg" : options.outputFormat.ext)
+        let baseName = options.outPath ?? defaultName
 
         let state = scannerState(base: base)
         if state != "Idle" && state != "Unknown" {
             err("Scanner state is \(state); trying anyway...")
         }
 
-        let mime = outFormat == .pdf ? "application/pdf" : "image/jpeg"
-        let settings = scanSettings(version: caps.version, mode: mode, mime: mime,
-                                    dpi: dpi, intent: intent,
+        let mime = options.outputFormat == .pdf ? "application/pdf" : "image/jpeg"
+        let settings = scanSettings(version: caps.version, mode: options.mode, mime: mime,
+                                    dpi: options.dpi, intent: options.intent,
                                     width: caps.maxWidth, height: caps.maxHeight)
-        if verbose { err(String(data: settings, encoding: .utf8) ?? "") }
+        if options.verbose { err(String(data: settings, encoding: .utf8) ?? "") }
 
         err("Scanning...")
         let started = Date()
-        let pages = try runScan(base: base, settings: settings, verbose: verbose)
+        let pages = try runScan(base: base, settings: settings, verbose: options.verbose)
         err(String(format: "Scanner returned %d page(s) in %.1fs",
                    pages.count, Date().timeIntervalSince(started)))
 
-        let platenW = platenMM(caps.maxWidth), platenH = platenMM(caps.maxHeight)
-
         for (i, data) in pages.enumerated() {
-            try cancellation.check()
-            let name = pageName(base0, index: i)
+            let name = pageName(baseName, index: i)
             let url = URL(fileURLWithPath: name)
-
-            if raw {
-                try data.write(to: url)
-            } else if data.starts(with: Array("%PDF".utf8)) {
-                try data.write(to: url)      // already a PDF, pass it through
-            } else {
-                var img = try loadImage(data)
-                var widthMM = platenW, heightMM = platenH
-                if let size = cropSize {
-                    let originalWidth = img.width, originalHeight = img.height
-                    img = cropped(img, widthMM: size.0, heightMM: size.1,
-                                  platenWmm: platenW, platenHmm: platenH)
-                    widthMM *= Double(img.width) / Double(originalWidth)
-                    heightMM *= Double(img.height) / Double(originalHeight)
-                    if verbose { err("  cropped to \(img.width)x\(img.height)px") }
-                }
-                if rotate != 0 { img = try rotated(img, degreesClockwise: rotate) }
-                if rotate == 90 || rotate == 270 { swap(&widthMM, &heightMM) }
-                switch mode {
-                case .color: break
-                case .gray: img = try toGray(img, threshold: nil)
-                case .lineart: img = try toGray(img, threshold: threshold)
-                }
-                try cancellation.check()
-                try write(img, to: url, format: outFormat,
-                          widthMM: widthMM, heightMM: heightMM)
-            }
+            try savePage(data, to: url, options: options, caps: caps)
 
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]
                         as? Int) ?? 0

@@ -40,7 +40,9 @@ FIELDS = [
 CSPACE = {0: "W", 1: "RGB", 3: "K", 18: "sgray_8", 19: "srgb_8", 20: "AdobeRGB"}
 
 
-def parse_header(buf):
+def parse_header(buf, byte_order=">"):
+    if len(buf) < HEADER_LEN:
+        raise ValueError("Truncated raster page header")
     out, off = {}, 0
     for name, kind, count in FIELDS:
         if kind in ("s", "S"):
@@ -50,12 +52,58 @@ def parse_header(buf):
                 off += 64
             out[name] = vals[0] if kind == "s" else vals
         else:
-            fmt = ">" + ("I" if kind == "u" else "f") * count
+            fmt = byte_order + ("I" if kind == "u" else "f") * count
             vals = struct.unpack_from(fmt, buf, off)
             off += 4 * count
             out[name] = vals[0] if count == 1 else list(vals)
     assert off == HEADER_LEN, f"header walk ended at {off}, expected {HEADER_LEN}"
     return out
+
+
+def decode_page(data, off, h, *, collect_rows=True):
+    """Return (rows, next offset). Header inspection skips pixel expansion."""
+    bpp = (h["cupsBitsPerPixel"] + 7) // 8
+    line_len = h["cupsBytesPerLine"]
+    rows_left = h["cupsHeight"]
+    if not bpp or not line_len or not rows_left:
+        raise ValueError("Invalid raster page geometry")
+
+    rows = []
+    while rows_left:
+        if off >= len(data):
+            raise ValueError("Missing raster row repeat count")
+        repeat = data[off] + 1
+        off += 1
+        if repeat > rows_left:
+            raise ValueError("Raster rows exceed page height")
+
+        line = bytearray() if collect_rows else None
+        remaining = line_len
+        while remaining:
+            if off >= len(data):
+                raise ValueError("Missing raster packet")
+            ctrl = data[off]
+            off += 1
+            if ctrl == 128:  # Fill the rest of the row without consuming pixels.
+                if collect_rows:
+                    line.extend(b"\xff" * remaining)
+                break
+
+            copies = ctrl + 1 if ctrl < 128 else 1
+            size = bpp if ctrl < 128 else (257 - ctrl) * bpp
+            if size * copies > remaining:
+                raise ValueError("Raster packet exceeds row length")
+            if off + size > len(data):
+                raise ValueError("Truncated raster packet")
+            if collect_rows:
+                line.extend(data[off:off + size] * copies)
+            off += size
+            remaining -= size * copies
+
+        if collect_rows:
+            rows.extend([bytes(line)] * repeat)
+        rows_left -= repeat
+    return rows, off
 
 
 def headers(path):
@@ -66,28 +114,10 @@ def headers(path):
         raise SystemExit(f"{path}: not PWG Raster (sync {sync!r})")
 
     pages, off = [], 4
-    while off + HEADER_LEN <= len(data):
-        h = parse_header(data[off:off + HEADER_LEN])
-        off += HEADER_LEN
-        # Skip the page's band data: each line is a repeat count plus packbits.
-        lines = 0
-        while lines < h["cupsHeight"] and off < len(data):
-            # The first byte says how many *additional* rows reuse this
-            # encoded line. Ignoring it walks into the next page header and
-            # makes every multi-page PWG stream look like a one-page file.
-            repeat = data[off]
-            off += 1
-            lines += repeat + 1
-            written = 0
-            while written < h["cupsBytesPerLine"] and off < len(data):
-                ctrl = data[off]; off += 1
-                if ctrl < 128:
-                    n = (ctrl + 1) * (h["cupsBitsPerPixel"] // 8)
-                    off += h["cupsBitsPerPixel"] // 8
-                else:
-                    n = (257 - ctrl) * (h["cupsBitsPerPixel"] // 8)
-                    off += n
-                written += n
+    byte_order = ">" if sync == b"RaS2" else "<"
+    while off < len(data):
+        h = parse_header(data[off:off + HEADER_LEN], byte_order)
+        _, off = decode_page(data, off + HEADER_LEN, h, collect_rows=False)
         pages.append((h, sync))
     return pages
 
@@ -124,4 +154,7 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or ["-"])
+    try:
+        main(sys.argv[1:] or ["-"])
+    except ValueError as exc:
+        sys.exit(str(exc))
